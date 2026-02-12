@@ -32,6 +32,13 @@ type Client struct {
 	// DebugLogger is an optional logger for detailed GSSAPI lifecycle events.
 	// Set this to receive debugging information about authentication steps.
 	DebugLogger DebugLogger
+
+	serviceTickets map[string]serviceTicketEntry
+}
+
+type serviceTicketEntry struct {
+	ticket messages.Ticket
+	key    types.EncryptionKey
 }
 
 // NewClientWithKeytab creates a new client from a keytab credential.
@@ -56,6 +63,14 @@ func NewClientWithKeytab(username, realm, keytabPath, krb5confPath string, setti
 		c.DebugLogger.LogClientCreation("keytab", username, realm)
 	}
 	return c, nil
+}
+
+// NewClientWithKerberosClient wraps an existing gokrb5 client.
+// This is useful when callers manage Kerberos tickets themselves.
+func NewClientWithKerberosClient(krbClient *client.Client) *Client {
+	return &Client{
+		Client: krbClient,
+	}
 }
 
 // NewClientWithPassword creates a new client from a password credential.
@@ -116,6 +131,29 @@ func (client *Client) DeleteSecContext() error {
 	return nil
 }
 
+// SetServiceTicket registers a service ticket for the provided SPN.
+// This allows callers to manage Kerberos tickets externally and bypass KDC lookups.
+// If spn is empty, the ticket's SName will be used.
+func (client *Client) SetServiceTicket(spn string, ticket messages.Ticket, key types.EncryptionKey) error {
+	if spn == "" {
+		spn = ticket.SName.PrincipalNameString()
+	}
+	if spn == "" {
+		return fmt.Errorf("service ticket SPN is empty")
+	}
+	if ticket.SName.PrincipalNameString() != spn {
+		return fmt.Errorf("service ticket SPN mismatch: ticket=%s, spn=%s", ticket.SName.PrincipalNameString(), spn)
+	}
+	if client.serviceTickets == nil {
+		client.serviceTickets = make(map[string]serviceTicketEntry)
+	}
+	client.serviceTickets[spn] = serviceTicketEntry{
+		ticket: ticket,
+		key:    key,
+	}
+	return nil
+}
+
 // GetDebugLogger returns the debug logger for this client.
 // This method is used internally to pass the debug logger to bind operations.
 func (client *Client) GetDebugLogger() interface{} {
@@ -133,6 +171,10 @@ func (client *Client) InitSecContext(target string, input []byte) ([]byte, bool,
 // GSS-API between the client and server.
 // See RFC 4752 section 3.1.
 func (client *Client) InitSecContextWithOptions(target string, input []byte, APOptions []int) ([]byte, bool, error) {
+	if client.Client == nil {
+		return nil, false, fmt.Errorf("kerberos client is nil")
+	}
+
 	gssapiFlags := []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf, gssapi.ContextFlagMutual}
 
 	iteration := 0
@@ -149,13 +191,21 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 		if client.DebugLogger != nil {
 			client.DebugLogger.LogServiceTicketRequest(target)
 		}
-		
-		tkt, ekey, err := client.Client.GetServiceTicket(target)
-		if err != nil {
-			if client.DebugLogger != nil {
-				client.DebugLogger.LogError("GetServiceTicket", err)
+
+		var tkt messages.Ticket
+		var ekey types.EncryptionKey
+		if entry, ok := client.serviceTickets[target]; ok {
+			tkt = entry.ticket
+			ekey = entry.key
+		} else {
+			var err error
+			tkt, ekey, err = client.Client.GetServiceTicket(target)
+			if err != nil {
+				if client.DebugLogger != nil {
+					client.DebugLogger.LogError("GetServiceTicket", err)
+				}
+				return nil, false, err
 			}
-			return nil, false, err
 		}
 		client.ekey = ekey
 		

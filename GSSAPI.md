@@ -106,6 +106,48 @@ func main() {
         log.Fatal(err)
     }
 
+
+    ### Using Externally Managed Service Tickets (TGS)
+
+    If you handle Kerberos ticket acquisition yourself, you can provide a TGS
+    service ticket directly and bypass KDC lookups. Supply the service ticket and
+    its session key to the GSSAPI client before binding.
+
+    ```go
+    import (
+        "github.com/go-ldap/ldap/v3"
+        "github.com/go-ldap/ldap/v3/gssapi"
+        "github.com/jcmturner/gokrb5/v8/messages"
+        "github.com/jcmturner/gokrb5/v8/types"
+    )
+
+    // Assume you already have a TGS ticket and session key
+    var tgsTicket messages.Ticket
+    var tgsSessionKey types.EncryptionKey
+
+    gssapiClient, err := gssapi.NewClientWithPassword("user", "REALM", "password", "/etc/krb5.conf")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer gssapiClient.Close()
+
+    // Register the externally managed service ticket for the target SPN
+    if err := gssapiClient.SetServiceTicket("ldap/ldap.example.com", tgsTicket, tgsSessionKey); err != nil {
+        log.Fatal(err)
+    }
+
+    l, err := ldap.DialURL("ldap://ldap.example.com:389")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer l.Close()
+
+    // Bind uses the provided TGS without contacting the KDC
+    err = l.GSSAPIBind(gssapiClient, "ldap/ldap.example.com", "")
+    if err != nil {
+        log.Fatal(err)
+    }
+    ```
     log.Println("Successfully authenticated with GSSAPI")
 }
 ```

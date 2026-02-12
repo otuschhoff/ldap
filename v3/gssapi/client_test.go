@@ -5,6 +5,9 @@ package gssapi
 
 import (
 	"testing"
+
+	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/jcmturner/gokrb5/v8/types"
 )
 
 // TestClientConstructors tests that the client constructors properly handle input parameters.
@@ -89,5 +92,46 @@ func TestClientDeleteSecContext(t *testing.T) {
 	}
 	if client.Subkey.KeyType != 0 {
 		t.Errorf("Subkey should be cleared")
+	}
+}
+
+func TestClientSetServiceTicket(t *testing.T) {
+	client := &Client{}
+
+	ticket := messages.Ticket{
+		SName: types.PrincipalName{
+			NameType:   2,
+			NameString: []string{"ldap", "example.com"},
+		},
+	}
+	key := types.EncryptionKey{KeyType: 18, KeyValue: []byte{0x01, 0x02}}
+	spn := "ldap/example.com"
+
+	if err := client.SetServiceTicket(spn, ticket, key); err != nil {
+		t.Fatalf("expected SetServiceTicket to succeed, got: %v", err)
+	}
+
+	entry, ok := client.serviceTickets[spn]
+	if !ok {
+		t.Fatalf("expected service ticket to be stored")
+	}
+	if entry.key.KeyType != key.KeyType {
+		t.Fatalf("expected key to be stored, got: %d", entry.key.KeyType)
+	}
+}
+
+func TestClientSetServiceTicketMismatch(t *testing.T) {
+	client := &Client{}
+
+	ticket := messages.Ticket{
+		SName: types.PrincipalName{
+			NameType:   2,
+			NameString: []string{"ldap", "example.com"},
+		},
+	}
+	key := types.EncryptionKey{KeyType: 18, KeyValue: []byte{0x01, 0x02}}
+
+	if err := client.SetServiceTicket("ldap/other.example.com", ticket, key); err == nil {
+		t.Fatalf("expected SetServiceTicket to fail on SPN mismatch")
 	}
 }
