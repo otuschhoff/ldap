@@ -8,6 +8,7 @@ The library implements the following specifications:
 - https://datatracker.ietf.org/doc/html/rfc3062 for password modify operation
 - https://datatracker.ietf.org/doc/html/rfc4514 for distinguished names parsing
 - https://datatracker.ietf.org/doc/html/rfc4533 for Content Synchronization Operation
+- https://datatracker.ietf.org/doc/html/rfc4752 for GSSAPI SASL mechanism (Kerberos authentication)
 - https://datatracker.ietf.org/doc/html/draft-armijo-ldap-treedelete-02 for Tree Delete Control
 - https://datatracker.ietf.org/doc/html/rfc2891 for Server Side Sorting of Search Results
 - https://datatracker.ietf.org/doc/html/rfc4532 for WhoAmI requests
@@ -33,6 +34,30 @@ The library implements the following specifications:
 ## Go Modules:
 
 `go get github.com/go-ldap/ldap/v3`
+
+## GSSAPI/Kerberos Authentication:
+
+This library supports GSSAPI SASL authentication with Kerberos for both Unix/Linux and Windows systems.
+
+**Unix/Linux**: Uses pure Go Kerberos implementation with support for keytab, password, and credential cache authentication.
+
+**Windows**: Native integration with Windows SSPI for seamless domain authentication.
+
+For detailed documentation and examples, see [GSSAPI.md](GSSAPI.md).
+
+Quick example:
+```go
+import "github.com/go-ldap/ldap/v3/gssapi"
+
+// Create GSSAPI client (Unix/Linux with password)
+gssapiClient, _ := gssapi.NewClientWithPassword("user", "REALM", "password", "/etc/krb5.conf")
+defer gssapiClient.Close()
+
+// Connect and bind
+l, _ := ldap.DialURL("ldap://ldap.example.com:389")
+defer l.Close()
+l.GSSAPIBind(gssapiClient, "ldap/ldap.example.com", "")
+```
 
 ## Contributing:
 

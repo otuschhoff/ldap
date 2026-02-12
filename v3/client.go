@@ -20,6 +20,8 @@ type Client interface {
 	UnauthenticatedBind(username string) error
 	SimpleBind(*SimpleBindRequest) (*SimpleBindResult, error)
 	ExternalBind() error
+	GSSAPIBind(client GSSAPIClient, servicePrincipal, authzid string) error
+	GSSAPIBindRequest(client GSSAPIClient, req *GSSAPIBindRequest) error
 	NTLMUnauthenticatedBind(domain, username string) error
 	Unbind() error
 
