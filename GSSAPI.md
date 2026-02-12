@@ -2,6 +2,13 @@
 
 This document provides comprehensive guidance on using GSSAPI SASL authentication with Kerberos for LDAP operations.
 
+## Documentation
+
+- **[GSSAPI.md](GSSAPI.md)** (this file) - Complete setup and usage guide
+- **[GSSAPI-DEBUG.md](GSSAPI-DEBUG.md)** - Debug logging and troubleshooting
+- **[GSSAPI-QUICKREF.md](GSSAPI-QUICKREF.md)** - Quick reference
+- **[GSSAPI-IMPLEMENTATION.md](GSSAPI-IMPLEMENTATION.md)** - Technical details
+
 ## Overview
 
 GSSAPI (Generic Security Services Application Program Interface) is a standardized interface for providing security services to applications. When combined with Kerberos, it provides strong authentication for LDAP connections without transmitting passwords over the network.
@@ -281,6 +288,27 @@ if err != nil {
 ```
 
 ## Troubleshooting
+
+### Debug Logging
+
+For detailed authentication debugging, use the built-in debug logger:
+
+```go
+import "github.com/go-ldap/ldap/v3/gssapi"
+
+// Create and attach debug logger
+debugLogger := gssapi.NewStandardDebugLogger(nil)
+gssapiClient.DebugLogger = debugLogger
+
+// Perform authentication - debug output will be printed
+l.GSSAPIBind(gssapiClient, "ldap/server.example.com", "")
+
+// Inspect context after authentication
+ctx := debugLogger.GetContext()
+fmt.Printf("Service: %s, Iterations: %d\n", ctx.ServicePrincipal, ctx.Iteration)
+```
+
+**See [GSSAPI-DEBUG.md](GSSAPI-DEBUG.md) for complete debug logging documentation.**
 
 ### Common Issues
 

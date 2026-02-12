@@ -43,7 +43,10 @@ This library supports GSSAPI SASL authentication with Kerberos for both Unix/Lin
 
 **Windows**: Native integration with Windows SSPI for seamless domain authentication.
 
+**Debug Logging**: Comprehensive lifecycle debugging with detailed token inspection and context access.
+
 For detailed documentation and examples, see [GSSAPI.md](GSSAPI.md).
+For debug logging guide, see [GSSAPI-DEBUG.md](GSSAPI-DEBUG.md).
 
 Quick example:
 ```go
@@ -52,6 +55,9 @@ import "github.com/go-ldap/ldap/v3/gssapi"
 // Create GSSAPI client (Unix/Linux with password)
 gssapiClient, _ := gssapi.NewClientWithPassword("user", "REALM", "password", "/etc/krb5.conf")
 defer gssapiClient.Close()
+
+// Optional: Enable debug logging
+gssapiClient.DebugLogger = gssapi.NewStandardDebugLogger(nil)
 
 // Connect and bind
 l, _ := ldap.DialURL("ldap://ldap.example.com:389")

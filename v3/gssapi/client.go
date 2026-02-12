@@ -28,6 +28,10 @@ type Client struct {
 
 	ekey   types.EncryptionKey
 	Subkey types.EncryptionKey
+	
+	// DebugLogger is an optional logger for detailed GSSAPI lifecycle events.
+	// Set this to receive debugging information about authentication steps.
+	DebugLogger DebugLogger
 }
 
 // NewClientWithKeytab creates a new client from a keytab credential.
@@ -45,9 +49,13 @@ func NewClientWithKeytab(username, realm, keytabPath, krb5confPath string, setti
 
 	client := client.NewWithKeytab(username, realm, keytab, krb5conf, settings...)
 
-	return &Client{
+	c := &Client{
 		Client: client,
-	}, nil
+	}
+	if c.DebugLogger != nil {
+		c.DebugLogger.LogClientCreation("keytab", username, realm)
+	}
+	return c, nil
 }
 
 // NewClientWithPassword creates a new client from a password credential.
@@ -60,9 +68,13 @@ func NewClientWithPassword(username, realm, password string, krb5confPath string
 
 	client := client.NewWithPassword(username, realm, password, krb5conf, settings...)
 
-	return &Client{
+	c := &Client{
 		Client: client,
-	}, nil
+	}
+	if c.DebugLogger != nil {
+		c.DebugLogger.LogClientCreation("password", username, realm)
+	}
+	return c, nil
 }
 
 // NewClientFromCCache creates a new client from a populated client cache.
@@ -82,9 +94,13 @@ func NewClientFromCCache(ccachePath, krb5confPath string, settings ...func(*clie
 		return nil, err
 	}
 
-	return &Client{
+	c := &Client{
 		Client: client,
-	}, nil
+	}
+	if c.DebugLogger != nil {
+		c.DebugLogger.LogClientCreation("ccache", ccache.DefaultPrincipal.PrincipalName.PrincipalNameString(), ccache.DefaultPrincipal.Realm)
+	}
+	return c, nil
 }
 
 // Close deletes any established secure context and closes the client.
@@ -100,6 +116,12 @@ func (client *Client) DeleteSecContext() error {
 	return nil
 }
 
+// GetDebugLogger returns the debug logger for this client.
+// This method is used internally to pass the debug logger to bind operations.
+func (client *Client) GetDebugLogger() interface{} {
+	return client.DebugLogger
+}
+
 // InitSecContext initiates the establishment of a security context for
 // GSS-API between the client and server.
 // See RFC 4752 section 3.1.
@@ -113,31 +135,70 @@ func (client *Client) InitSecContext(target string, input []byte) ([]byte, bool,
 func (client *Client) InitSecContextWithOptions(target string, input []byte, APOptions []int) ([]byte, bool, error) {
 	gssapiFlags := []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf, gssapi.ContextFlagMutual}
 
+	iteration := 0
+	if input != nil {
+		iteration = 1
+	}
+
+	if client.DebugLogger != nil {
+		client.DebugLogger.LogInitSecContext("start", iteration, len(input), false, nil)
+	}
+
 	switch input {
 	case nil:
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogServiceTicketRequest(target)
+		}
+		
 		tkt, ekey, err := client.Client.GetServiceTicket(target)
 		if err != nil {
+			if client.DebugLogger != nil {
+				client.DebugLogger.LogError("GetServiceTicket", err)
+			}
 			return nil, false, err
 		}
 		client.ekey = ekey
+		
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogServiceTicketResponse(tkt, ekey)
+			client.DebugLogger.LogEncryptionDetails(ekey.KeyType, false)
+		}
 
 		token, err := spnego.NewKRB5TokenAPREQ(client.Client, tkt, ekey, gssapiFlags, APOptions)
 		if err != nil {
+			if client.DebugLogger != nil {
+				client.DebugLogger.LogError("NewKRB5TokenAPREQ", err)
+			}
 			return nil, false, err
 		}
 
 		output, err := token.Marshal()
 		if err != nil {
+			if client.DebugLogger != nil {
+				client.DebugLogger.LogError("Marshal AP-REQ", err)
+			}
 			return nil, false, err
+		}
+
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogTokenDetails("outgoing", "AP-REQ", output)
+			client.DebugLogger.LogInitSecContext("complete", iteration, len(output), true, nil)
 		}
 
 		return output, true, nil
 
 	default:
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogTokenDetails("incoming", "server-response", input)
+		}
+		
 		var token spnego.KRB5Token
 
 		err := token.Unmarshal(input)
 		if err != nil {
+			if client.DebugLogger != nil {
+				client.DebugLogger.LogError("Unmarshal server token", err)
+			}
 			return nil, false, err
 		}
 
@@ -145,22 +206,43 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 
 		if token.IsAPRep() {
 			completed = true
+			
+			if client.DebugLogger != nil {
+				client.DebugLogger.LogTokenDetails("incoming", "AP-REP", input)
+			}
 
 			encpart, err := crypto.DecryptEncPart(token.APRep.EncPart, client.ekey, keyusage.AP_REP_ENCPART)
 			if err != nil {
+				if client.DebugLogger != nil {
+					client.DebugLogger.LogError("DecryptEncPart", err)
+				}
 				return nil, false, err
 			}
 
 			part := &messages.EncAPRepPart{}
 
 			if err = part.Unmarshal(encpart); err != nil {
+				if client.DebugLogger != nil {
+					client.DebugLogger.LogError("Unmarshal EncAPRepPart", err)
+				}
 				return nil, false, err
 			}
 			client.Subkey = part.Subkey
+			
+			if client.DebugLogger != nil {
+				client.DebugLogger.LogEncryptionDetails(part.Subkey.KeyType, true)
+			}
 		}
 
 		if token.IsKRBError() {
+			if client.DebugLogger != nil {
+				client.DebugLogger.LogError("KRB-ERROR received", token.KRBError)
+			}
 			return nil, !false, token.KRBError
+		}
+
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogInitSecContext("complete", iteration, 0, !completed, nil)
 		}
 
 		return make([]byte, 0), !completed, nil
@@ -170,14 +252,25 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 // NegotiateSaslAuth performs the last step of the SASL handshake.
 // See RFC 4752 section 3.1.
 func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, error) {
+	if client.DebugLogger != nil {
+		client.DebugLogger.LogTokenDetails("incoming", "SASL-wrap", input)
+	}
+	
 	token := &gssapi.WrapToken{}
 	err := UnmarshalWrapToken(token, input, true)
 	if err != nil {
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogError("UnmarshalWrapToken", err)
+		}
 		return nil, err
 	}
 
 	if (token.Flags & 0b1) == 0 {
-		return nil, fmt.Errorf("got a Wrapped token that's not from the server")
+		err := fmt.Errorf("got a Wrapped token that's not from the server")
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogError("token validation", err)
+		}
+		return nil, err
 	}
 
 	key := client.ekey
@@ -187,12 +280,27 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 
 	_, err = token.Verify(key, keyusage.GSSAPI_ACCEPTOR_SEAL)
 	if err != nil {
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogError("token verification", err)
+		}
 		return nil, err
 	}
 
 	pl := token.Payload
 	if len(pl) != 4 {
-		return nil, fmt.Errorf("server send bad final token for SASL GSSAPI Handshake")
+		err := fmt.Errorf("server send bad final token for SASL GSSAPI Handshake")
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogError("payload validation", err)
+		}
+		return nil, err
+	}
+
+	// Extract server's security layer support
+	securityLayers := pl[0]
+	maxBuffer := uint32(pl[1])<<16 | uint32(pl[2])<<8 | uint32(pl[3])
+	
+	if client.DebugLogger != nil {
+		client.DebugLogger.LogNegotiateSaslAuth("received", securityLayers, maxBuffer, "")
 	}
 
 	// We never want a security layer
@@ -201,6 +309,9 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 
 	encType, err := crypto.GetEtype(key.KeyType)
 	if err != nil {
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogError("GetEtype", err)
+		}
 		return nil, err
 	}
 
@@ -213,12 +324,23 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 	}
 
 	if err := token.SetCheckSum(key, keyusage.GSSAPI_INITIATOR_SEAL); err != nil {
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogError("SetCheckSum", err)
+		}
 		return nil, err
 	}
 
 	output, err := token.Marshal()
 	if err != nil {
+		if client.DebugLogger != nil {
+			client.DebugLogger.LogError("Marshal wrap token", err)
+		}
 		return nil, err
+	}
+	
+	if client.DebugLogger != nil {
+		client.DebugLogger.LogNegotiateSaslAuth("sending", 0, 0, authzid)
+		client.DebugLogger.LogTokenDetails("outgoing", "SASL-wrap", output)
 	}
 
 	return output, nil

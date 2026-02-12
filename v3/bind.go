@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"strings"
+	"time"
 	"unicode/utf16"
 
 	"github.com/Azure/go-ntlmssp"
@@ -699,6 +700,16 @@ func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBi
 	//nolint:errcheck
 	defer client.DeleteSecContext()
 
+	// Extract debug logger if the client supports it
+	var debugLogger interface{}
+	type debuggable interface {
+		GetDebugLogger() interface{}
+	}
+	if dc, ok := client.(debuggable); ok {
+		debugLogger = dc.GetDebugLogger()
+	}
+
+	startTime := time.Now()
 	var err error
 	var reqToken []byte
 	var recvToken []byte
@@ -719,7 +730,7 @@ func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBi
 		}
 		// Send Bind request containing the current token and extract the
 		// token sent by server.
-		recvToken, err = l.saslBindTokenExchange(req.Controls, reqToken)
+		recvToken, err = l.saslBindTokenExchange(req.Controls, reqToken, debugLogger)
 		if err != nil {
 			return err
 		}
@@ -728,14 +739,21 @@ func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBi
 			break
 		}
 	}
+	
+	if debugLogger != nil {
+		if dl, ok := debugLogger.(interface{ LogCompletion(time.Duration) }); ok {
+			dl.LogCompletion(time.Since(startTime))
+		}
+	}
 
 	return nil
 }
 
-func (l *Conn) saslBindTokenExchange(reqControls []Control, reqToken []byte) ([]byte, error) {
+func (l *Conn) saslBindTokenExchange(reqControls []Control, reqToken []byte, debugLogger interface{}) ([]byte, error) {
 	// Construct LDAP Bind request with GSSAPI SASL mechanism.
 	envelope := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "LDAP Request")
-	envelope.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, l.nextMessageID(), "MessageID"))
+	msgID := l.nextMessageID()
+	envelope.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, msgID, "MessageID"))
 
 	request := ber.Encode(ber.ClassApplication, ber.TypeConstructed, ApplicationBindRequest, nil, "Bind Request")
 	request.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, 3, "Version"))
@@ -750,6 +768,12 @@ func (l *Conn) saslBindTokenExchange(reqControls []Control, reqToken []byte) ([]
 	envelope.AppendChild(request)
 	if len(reqControls) > 0 {
 		envelope.AppendChild(encodeControls(reqControls))
+	}
+	
+	if debugLogger != nil {
+		if dl, ok := debugLogger.(interface{ LogBindRequest(int64, string, int) }); ok {
+			dl.LogBindRequest(msgID, "GSSAPI", len(reqToken))
+		}
 	}
 
 	msgCtx, err := l.sendMessage(envelope)
@@ -809,6 +833,11 @@ RESP:
 		case 0: // Success - Bind OK.
 			// SASL layer in effect (if any) (See https://www.rfc-editor.org/rfc/rfc4513#section-5.2.1.4)
 			// NOTE: SASL security layers are not supported currently.
+			if debugLogger != nil {
+				if dl, ok := debugLogger.(interface{ LogBindResponse(int64, int64, []byte) }); ok {
+					dl.LogBindResponse(msgID, 0, nil)
+				}
+			}
 			return nil, nil
 		}
 	}
