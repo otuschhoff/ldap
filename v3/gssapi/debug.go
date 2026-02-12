@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	ber "github.com/go-asn1-ber/asn1-ber"
 	"github.com/jcmturner/gokrb5/v8/types"
 )
 
@@ -39,6 +40,10 @@ type DebugLogger interface {
 
 	// LogBindResponse is called when receiving an LDAP bind response.
 	LogBindResponse(messageID int64, resultCode int64, serverToken []byte)
+
+	// LogPacket is called for every LDAP packet transmitted or received.
+	// direction is "tx" or "rx".
+	LogPacket(direction string, messageID int64, packet *ber.Packet)
 
 	// LogError is called when an error occurs during the GSSAPI lifecycle.
 	LogError(operation string, err error)
@@ -136,6 +141,16 @@ func (d *StandardDebugLogger) LogBindRequest(messageID int64, servicePrincipal s
 func (d *StandardDebugLogger) LogBindResponse(messageID int64, resultCode int64, serverToken []byte) {
 	d.Output("[GSSAPI] LDAP Bind Response: msgID=%d, resultCode=%d, serverTokenLen=%d\n",
 		messageID, resultCode, len(serverToken))
+}
+
+func (d *StandardDebugLogger) LogPacket(direction string, messageID int64, packet *ber.Packet) {
+	if packet == nil {
+		d.Output("[GSSAPI] LDAP Packet %s: msgID=%d, packet=nil\n", direction, messageID)
+		return
+	}
+	childCount := len(packet.Children)
+	d.Output("[GSSAPI] LDAP Packet %s: msgID=%d, tag=%d, class=%d, children=%d, desc=%s\n",
+		direction, messageID, packet.Tag, packet.ClassType, childCount, packet.Description)
 }
 
 func (d *StandardDebugLogger) LogError(operation string, err error) {

@@ -774,6 +774,9 @@ func (l *Conn) saslBindTokenExchange(reqControls []Control, reqToken []byte, deb
 		if dl, ok := debugLogger.(interface{ LogBindRequest(int64, string, int) }); ok {
 			dl.LogBindRequest(msgID, "GSSAPI", len(reqToken))
 		}
+		if dl, ok := debugLogger.(interface{ LogPacket(string, int64, *ber.Packet) }); ok {
+			dl.LogPacket("tx", msgID, envelope)
+		}
 	}
 
 	msgCtx, err := l.sendMessage(envelope)
@@ -785,6 +788,11 @@ func (l *Conn) saslBindTokenExchange(reqControls []Control, reqToken []byte, deb
 	packet, err := l.readPacket(msgCtx)
 	if err != nil {
 		return nil, err
+	}
+	if debugLogger != nil {
+		if dl, ok := debugLogger.(interface{ LogPacket(string, int64, *ber.Packet) }); ok {
+			dl.LogPacket("rx", msgCtx.id, packet)
+		}
 	}
 	l.Debug.Printf("%d: got response %p", msgCtx.id, packet)
 	if l.Debug {

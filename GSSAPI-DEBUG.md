@@ -63,6 +63,9 @@ type DebugLogger interface {
     // LDAP bind operations
     LogBindRequest(messageID int64, servicePrincipal string, tokenLen int)
     LogBindResponse(messageID int64, resultCode int64, serverToken []byte)
+
+    // Packet-level callbacks for each LDAP TX/RX
+    LogPacket(direction string, messageID int64, packet *ber.Packet)
     
     // Error handling
     LogError(operation string, err error)
@@ -84,6 +87,29 @@ logger := gssapi.NewStandardDebugLogger(nil)
 logger := gssapi.NewStandardDebugLogger(func(format string, args ...interface{}) {
     log.Printf(format, args...)
 })
+```
+
+## Packet-Level Debugging
+
+The packet callback fires for every LDAP packet sent and received during the
+GSSAPI bind exchange. This is useful for low-level protocol debugging and
+correlating LDAP message IDs with GSSAPI state.
+
+```go
+type PacketOnlyLogger struct {
+    *gssapi.StandardDebugLogger
+}
+
+func (p *PacketOnlyLogger) LogPacket(direction string, messageID int64, packet *ber.Packet) {
+    if packet == nil {
+        log.Printf("packet %s id=%d: nil", direction, messageID)
+        return
+    }
+    log.Printf("packet %s id=%d: tag=%d desc=%s", direction, messageID, packet.Tag, packet.Description)
+}
+
+logger := &PacketOnlyLogger{StandardDebugLogger: gssapi.NewStandardDebugLogger(nil)}
+client.DebugLogger = logger
 ```
 
 ### Example Output

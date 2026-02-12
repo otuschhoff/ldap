@@ -308,6 +308,9 @@ ctx := debugLogger.GetContext()
 fmt.Printf("Service: %s, Iterations: %d\n", ctx.ServicePrincipal, ctx.Iteration)
 ```
 
+The debug logger also exposes a packet-level callback (`LogPacket`) that fires
+on each LDAP TX/RX packet during the GSSAPI bind exchange for low-level tracing.
+
 **See [GSSAPI-DEBUG.md](GSSAPI-DEBUG.md) for complete debug logging documentation.**
 
 ### Common Issues

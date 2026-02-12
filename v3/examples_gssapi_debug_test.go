@@ -7,8 +7,24 @@ import (
 	"fmt"
 	"log"
 
+	ber "github.com/go-asn1-ber/asn1-ber"
 	"github.com/go-ldap/ldap/v3/gssapi"
 )
+
+// CustomDebugLogger demonstrates extending the standard logger with packet-level callbacks.
+type CustomDebugLogger struct {
+	*gssapi.StandardDebugLogger
+	logFile *log.Logger
+}
+
+// LogPacket implements packet-level debugging for each LDAP TX/RX packet.
+func (c *CustomDebugLogger) LogPacket(direction string, messageID int64, packet *ber.Packet) {
+	if packet == nil {
+		log.Printf("[GSSAPI-PACKET] %s msgID=%d packet=nil", direction, messageID)
+		return
+	}
+	log.Printf("[GSSAPI-PACKET] %s msgID=%d tag=%d desc=%s", direction, messageID, packet.Tag, packet.Description)
+}
 
 // This example demonstrates how to use debug logging with GSSAPI authentication
 // to troubleshoot authentication issues and inspect the authentication lifecycle.
@@ -55,12 +71,6 @@ func ExampleConn_GSSAPIBind_withDebugging() {
 // This example shows how to create a custom debug logger with specific
 // formatting and selective event logging.
 func ExampleConn_GSSAPIBind_customDebugLogger() {
-	// Create a custom debug logger
-	type CustomDebugLogger struct {
-		*gssapi.StandardDebugLogger
-		logFile *log.Logger
-	}
-
 	// Custom output function that writes to a file or specific destination
 	customOutput := func(format string, args ...interface{}) {
 		// You could write to a file, specific logger, or monitoring system
