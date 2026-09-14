@@ -4,11 +4,19 @@
 package gssapi
 
 import (
+	"strings"
 	"testing"
 
-	"github.com/jcmturner/gokrb5/v8/messages"
-	"github.com/jcmturner/gokrb5/v8/types"
+	"github.com/otuschhoff/gokrb5/v8/messages"
+	"github.com/otuschhoff/gokrb5/v8/types"
 )
+
+func TestNewClientFromCCacheDataRejectsNilCache(t *testing.T) {
+	_, err := NewClientFromCCacheData(nil, "")
+	if err == nil || !strings.Contains(err.Error(), "credential cache is nil") {
+		t.Fatalf("NewClientFromCCacheData() error = %v", err)
+	}
+}
 
 // TestClientConstructors tests that the client constructors properly handle input parameters.
 func TestClientConstructors(t *testing.T) {
@@ -76,16 +84,16 @@ func TestClientConstructors(t *testing.T) {
 // TestClientDeleteSecContext tests that DeleteSecContext clears the encryption keys.
 func TestClientDeleteSecContext(t *testing.T) {
 	client := &Client{}
-	
+
 	// Set some dummy keys
 	client.ekey.KeyType = 17
 	client.Subkey.KeyType = 18
-	
+
 	err := client.DeleteSecContext()
 	if err != nil {
 		t.Errorf("DeleteSecContext should not error, got: %v", err)
 	}
-	
+
 	// Verify keys are cleared
 	if client.ekey.KeyType != 0 {
 		t.Errorf("ekey should be cleared")

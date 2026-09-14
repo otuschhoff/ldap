@@ -7,19 +7,19 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jcmturner/gokrb5/v8/client"
-	"github.com/jcmturner/gokrb5/v8/config"
-	"github.com/jcmturner/gokrb5/v8/keytab"
-	"github.com/jcmturner/gokrb5/v8/types"
+	"github.com/otuschhoff/gokrb5/v8/client"
+	"github.com/otuschhoff/gokrb5/v8/config"
+	"github.com/otuschhoff/gokrb5/v8/keytab"
+	"github.com/otuschhoff/gokrb5/v8/types"
 
-	"github.com/jcmturner/gokrb5/v8/gssapi"
-	"github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/otuschhoff/gokrb5/v8/gssapi"
+	"github.com/otuschhoff/gokrb5/v8/spnego"
 
-	"github.com/jcmturner/gokrb5/v8/crypto"
-	"github.com/jcmturner/gokrb5/v8/iana/keyusage"
-	"github.com/jcmturner/gokrb5/v8/messages"
+	"github.com/otuschhoff/gokrb5/v8/crypto"
+	"github.com/otuschhoff/gokrb5/v8/iana/keyusage"
+	"github.com/otuschhoff/gokrb5/v8/messages"
 
-	"github.com/jcmturner/gokrb5/v8/credentials"
+	"github.com/otuschhoff/gokrb5/v8/credentials"
 )
 
 // Client implements ldap.GSSAPIClient interface.
@@ -28,7 +28,7 @@ type Client struct {
 
 	ekey   types.EncryptionKey
 	Subkey types.EncryptionKey
-	
+
 	// DebugLogger is an optional logger for detailed GSSAPI lifecycle events.
 	// Set this to receive debugging information about authentication steps.
 	DebugLogger DebugLogger
@@ -116,6 +116,24 @@ func NewClientFromCCache(ccachePath, krb5confPath string, settings ...func(*clie
 		c.DebugLogger.LogClientCreation("ccache", ccache.DefaultPrincipal.PrincipalName.PrincipalNameString(), ccache.DefaultPrincipal.Realm)
 	}
 	return c, nil
+}
+
+// NewClientFromCCacheData creates a client from an in-memory credential cache.
+func NewClientFromCCacheData(ccache *credentials.CCache, krb5confPath string, settings ...func(*client.Settings)) (*Client, error) {
+	if ccache == nil {
+		return nil, errors.New("credential cache is nil")
+	}
+	krb5conf, err := config.Load(krb5confPath)
+	if err != nil {
+		return nil, err
+	}
+
+	krbClient, err := client.NewFromCCache(ccache, krb5conf, settings...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{Client: krbClient}, nil
 }
 
 // Close deletes any established secure context and closes the client.
@@ -208,7 +226,7 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 			}
 		}
 		client.ekey = ekey
-		
+
 		if client.DebugLogger != nil {
 			client.DebugLogger.LogServiceTicketResponse(tkt, ekey)
 			client.DebugLogger.LogEncryptionDetails(ekey.KeyType, false)
@@ -241,7 +259,7 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 		if client.DebugLogger != nil {
 			client.DebugLogger.LogTokenDetails("incoming", "server-response", input)
 		}
-		
+
 		var token spnego.KRB5Token
 
 		err := token.Unmarshal(input)
@@ -256,7 +274,7 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 
 		if token.IsAPRep() {
 			completed = true
-			
+
 			if client.DebugLogger != nil {
 				client.DebugLogger.LogTokenDetails("incoming", "AP-REP", input)
 			}
@@ -278,7 +296,7 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 				return nil, false, err
 			}
 			client.Subkey = part.Subkey
-			
+
 			if client.DebugLogger != nil {
 				client.DebugLogger.LogEncryptionDetails(part.Subkey.KeyType, true)
 			}
@@ -305,7 +323,7 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 	if client.DebugLogger != nil {
 		client.DebugLogger.LogTokenDetails("incoming", "SASL-wrap", input)
 	}
-	
+
 	token := &gssapi.WrapToken{}
 	err := UnmarshalWrapToken(token, input, true)
 	if err != nil {
@@ -348,7 +366,7 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 	// Extract server's security layer support
 	securityLayers := pl[0]
 	maxBuffer := uint32(pl[1])<<16 | uint32(pl[2])<<8 | uint32(pl[3])
-	
+
 	if client.DebugLogger != nil {
 		client.DebugLogger.LogNegotiateSaslAuth("received", securityLayers, maxBuffer, "")
 	}
@@ -387,7 +405,7 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 		}
 		return nil, err
 	}
-	
+
 	if client.DebugLogger != nil {
 		client.DebugLogger.LogNegotiateSaslAuth("sending", 0, 0, authzid)
 		client.DebugLogger.LogTokenDetails("outgoing", "SASL-wrap", output)

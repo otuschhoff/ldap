@@ -6,7 +6,7 @@ import (
 	"time"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
-	"github.com/jcmturner/gokrb5/v8/types"
+	"github.com/otuschhoff/gokrb5/v8/types"
 )
 
 // DebugLogger is an interface for receiving detailed GSSAPI lifecycle events.
