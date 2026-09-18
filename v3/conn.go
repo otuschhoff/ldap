@@ -108,6 +108,7 @@ type Conn struct {
 	closeErr               atomic.Value
 	isStartingTLS          bool
 	isStartingSASL         bool
+	saslReaderStopped      chan struct{}
 	saslSecurityLayer      GSSAPISecurityLayer
 	saslSecurityLayerOwner GSSAPIClient
 	Debug                  debugging
@@ -659,7 +660,11 @@ func (l *Conn) processMessages() {
 
 func (l *Conn) reader() {
 	cleanstop := false
+	var saslReaderStopped chan struct{}
 	defer func() {
+		if saslReaderStopped != nil {
+			close(saslReaderStopped)
+		}
 		if err := recover(); err != nil {
 			l.setError(fmt.Errorf("ldap: recovered panic in reader: %v", err))
 		}
@@ -677,12 +682,16 @@ func (l *Conn) reader() {
 			l.Debug.Printf("reader clean stopping (without closing the connection)")
 			return
 		}
-		var packet *ber.Packet
+		var packets []*ber.Packet
 		var err error
 		if securityLayer == nil {
+			var packet *ber.Packet
 			packet, err = ber.ReadPacket(bufConn)
+			if err == nil {
+				packets = []*ber.Packet{packet}
+			}
 		} else {
-			packet, err = readSASLPacket(bufConn, securityLayer)
+			packets, err = readSASLPackets(bufConn, securityLayer)
 		}
 		if err != nil {
 			// A read error is expected here if we are closing the connection...
@@ -692,28 +701,31 @@ func (l *Conn) reader() {
 			}
 			return
 		}
-		if err := addLDAPDescriptions(packet); err != nil {
-			l.Debug.Printf("descriptions error: %s", err)
-		}
-		if len(packet.Children) == 0 {
-			l.Debug.Printf("Received bad ldap packet")
-			continue
-		}
-		l.messageMutex.Lock()
-		if l.isStartingTLS {
-			cleanstop = true
-		}
-		if l.isStartingSASL && isSuccessfulBindResponse(packet) {
-			cleanstop = true
-		}
-		l.messageMutex.Unlock()
-		message := &messagePacket{
-			Op:        MessageResponse,
-			MessageID: packet.Children[0].Value.(int64),
-			Packet:    packet,
-		}
-		if !l.sendProcessMessage(message) {
-			return
+		for _, packet := range packets {
+			if err := addLDAPDescriptions(packet); err != nil {
+				l.Debug.Printf("descriptions error: %s", err)
+			}
+			if len(packet.Children) == 0 {
+				l.Debug.Printf("Received bad ldap packet")
+				continue
+			}
+			l.messageMutex.Lock()
+			if l.isStartingTLS {
+				cleanstop = true
+			}
+			if l.isStartingSASL && isSuccessfulBindResponse(packet) {
+				cleanstop = true
+				saslReaderStopped = l.saslReaderStopped
+			}
+			l.messageMutex.Unlock()
+			message := &messagePacket{
+				Op:        MessageResponse,
+				MessageID: packet.Children[0].Value.(int64),
+				Packet:    packet,
+			}
+			if !l.sendProcessMessage(message) {
+				return
+			}
 		}
 	}
 }
@@ -731,7 +743,7 @@ func wrapSASLMessage(securityLayer GSSAPISecurityLayer, message []byte) ([]byte,
 	return append(frame, token...), nil
 }
 
-func readSASLPacket(reader io.Reader, securityLayer GSSAPISecurityLayer) (*ber.Packet, error) {
+func readSASLPackets(reader io.Reader, securityLayer GSSAPISecurityLayer) ([]*ber.Packet, error) {
 	var tokenLength uint32
 	if err := binary.Read(reader, binary.BigEndian, &tokenLength); err != nil {
 		return nil, err
@@ -747,7 +759,16 @@ func readSASLPacket(reader io.Reader, securityLayer GSSAPISecurityLayer) (*ber.P
 	if err != nil {
 		return nil, err
 	}
-	return ber.ReadPacket(bytes.NewReader(message))
+	messageReader := bytes.NewReader(message)
+	packets := make([]*ber.Packet, 0, 1)
+	for messageReader.Len() > 0 {
+		packet, err := ber.ReadPacket(messageReader)
+		if err != nil {
+			return nil, err
+		}
+		packets = append(packets, packet)
+	}
+	return packets, nil
 }
 
 func isSuccessfulBindResponse(packet *ber.Packet) bool {

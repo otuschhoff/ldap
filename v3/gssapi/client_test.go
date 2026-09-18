@@ -146,7 +146,7 @@ func TestClientSetServiceTicketMismatch(t *testing.T) {
 	}
 }
 
-func TestNegotiateSaslAuthResetsApplicationSequenceNumbers(t *testing.T) {
+func TestNegotiateSaslAuthUsesApplicationSequenceNumbers(t *testing.T) {
 	key := types.EncryptionKey{KeyType: 18, KeyValue: make([]byte, 32)}
 	client := &Client{ekey: key}
 
@@ -166,7 +166,7 @@ func TestNegotiateSaslAuthResetsApplicationSequenceNumbers(t *testing.T) {
 		t.Fatalf("unwrap negotiation response: %v", err)
 	}
 
-	serverApplication, err := krbgssapi.NewSecurityContext(key, false, 0, 0, false)
+	serverApplication, err := krbgssapi.NewSecurityContext(key, false, 0, 2, false)
 	if err != nil {
 		t.Fatal(err)
 	}

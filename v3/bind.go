@@ -754,6 +754,8 @@ func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBi
 		return NewError(ErrorNetwork, errors.New("ldap: cannot start GSSAPI bind with outstanding requests"))
 	}
 	l.isStartingSASL = true
+	l.saslReaderStopped = make(chan struct{})
+	saslReaderStopped := l.saslReaderStopped
 	l.messageMutex.Unlock()
 
 	completed := false
@@ -812,10 +814,12 @@ func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBi
 	if !ok {
 		return errors.New("ldap: GSSAPI client does not provide a SASL security layer")
 	}
+	<-saslReaderStopped
 	l.messageMutex.Lock()
 	l.saslSecurityLayer = securityLayer
 	l.saslSecurityLayerOwner = client
 	l.isStartingSASL = false
+	l.saslReaderStopped = nil
 	l.messageMutex.Unlock()
 	completed = true
 	go l.reader()

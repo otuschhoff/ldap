@@ -2,6 +2,7 @@ package ldap
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -14,6 +15,41 @@ import (
 
 	ber "github.com/go-asn1-ber/asn1-ber"
 )
+
+type testSASLSecurityLayer struct {
+	message []byte
+}
+
+func (layer testSASLSecurityLayer) WrapSASL(message []byte) ([]byte, error) {
+	return message, nil
+}
+
+func (layer testSASLSecurityLayer) UnwrapSASL([]byte) ([]byte, error) {
+	return layer.message, nil
+}
+
+func TestReadSASLPacketsDecodesEveryLDAPMessage(t *testing.T) {
+	first := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "LDAP Response")
+	first.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, 4, "MessageID"))
+	second := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "LDAP Response")
+	second.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, 4, "MessageID"))
+	message := append(first.Bytes(), second.Bytes()...)
+
+	frame := make([]byte, 5)
+	binary.BigEndian.PutUint32(frame, 1)
+	packets, err := readSASLPackets(bytes.NewReader(frame), testSASLSecurityLayer{message: message})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packets) != 2 {
+		t.Fatalf("decoded %d LDAP packets, want 2", len(packets))
+	}
+	for index, packet := range packets {
+		if messageID := packet.Children[0].Value.(int64); messageID != 4 {
+			t.Fatalf("packet %d message ID = %d, want 4", index, messageID)
+		}
+	}
+}
 
 func TestUnresponsiveConnection(t *testing.T) {
 	// The do-nothing server that accepts requests and does nothing

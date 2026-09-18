@@ -397,7 +397,7 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 		client.DebugLogger.LogNegotiateSaslAuth("sending", confidentialityLayer, 0x00ffffff, authzid)
 		client.DebugLogger.LogTokenDetails("outgoing", "SASL-wrap", output)
 	}
-	client.securityContext, err = krbgssapi.NewSecurityContext(key, true, 0, 0, acceptorSubkey)
+	client.securityContext, err = krbgssapi.NewSecurityContext(key, true, 2, 0, acceptorSubkey)
 	if err != nil {
 		return nil, err
 	}
