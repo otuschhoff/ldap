@@ -46,7 +46,12 @@ func (l *Conn) Compare(dn, attribute, value string) (bool, error) {
 		return false, err
 	}
 
-	if packet.Children[1].Tag == ApplicationCompareResponse {
+	response, err := getProtocolOp(packet)
+	if err != nil {
+		return false, err
+	}
+
+	if response.Tag == ApplicationCompareResponse {
 		err := GetLDAPError(packet)
 
 		switch {
@@ -58,5 +63,5 @@ func (l *Conn) Compare(dn, attribute, value string) (bool, error) {
 			return false, err
 		}
 	}
-	return false, fmt.Errorf("unexpected Response: %d", packet.Children[1].Tag)
+	return false, fmt.Errorf("unexpected Response: %d", response.Tag)
 }

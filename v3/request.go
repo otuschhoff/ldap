@@ -2,6 +2,7 @@ package ldap
 
 import (
 	"errors"
+	"fmt"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
 )
@@ -69,6 +70,14 @@ func (l *Conn) readPacket(msgCtx *messageContext) (*ber.Packet, error) {
 		l.Debug.PrintPacket(packet)
 	}
 	return packet, nil
+}
+
+func getProtocolOp(packet *ber.Packet) (*ber.Packet, error) {
+	if packet == nil || len(packet.Children) < 2 || packet.Children[1] == nil {
+		return nil, NewError(ErrorUnexpectedResponse, fmt.Errorf("ldap: malformed response packet"))
+	}
+
+	return packet.Children[1], nil
 }
 
 func getReferral(err error, packet *ber.Packet) (referral string) {

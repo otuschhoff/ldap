@@ -121,13 +121,18 @@ func (l *Conn) Modify(modifyRequest *ModifyRequest) error {
 		return err
 	}
 
-	if packet.Children[1].Tag == ApplicationModifyResponse {
+	response, err := getProtocolOp(packet)
+	if err != nil {
+		return err
+	}
+
+	if response.Tag == ApplicationModifyResponse {
 		err := GetLDAPError(packet)
 		if err != nil {
 			return err
 		}
 	} else {
-		return fmt.Errorf("ldap: unexpected response: %d", packet.Children[1].Tag)
+		return fmt.Errorf("ldap: unexpected response: %d", response.Tag)
 	}
 
 	return nil
@@ -159,7 +164,12 @@ func (l *Conn) ModifyWithResult(modifyRequest *ModifyRequest) (*ModifyResult, er
 		return nil, err
 	}
 
-	switch packet.Children[1].Tag {
+	response, err := getProtocolOp(packet)
+	if err != nil {
+		return nil, err
+	}
+
+	switch response.Tag {
 	case ApplicationModifyResponse:
 		if err = GetLDAPError(packet); err != nil {
 			result.Referral = getReferral(err, packet)

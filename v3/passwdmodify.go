@@ -93,17 +93,22 @@ func (l *Conn) PasswordModify(passwordModifyRequest *PasswordModifyRequest) (*Pa
 
 	result := &PasswordModifyResult{}
 
-	if packet.Children[1].Tag == ApplicationExtendedResponse {
+	response, err := getProtocolOp(packet)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.Tag == ApplicationExtendedResponse {
 		if err = GetLDAPError(packet); err != nil {
 			result.Referral = getReferral(err, packet)
 
 			return result, err
 		}
 	} else {
-		return nil, NewError(ErrorUnexpectedResponse, fmt.Errorf("unexpected Response: %d", packet.Children[1].Tag))
+		return nil, NewError(ErrorUnexpectedResponse, fmt.Errorf("unexpected Response: %d", response.Tag))
 	}
 
-	extendedResponse := packet.Children[1]
+	extendedResponse := response
 	for _, child := range extendedResponse.Children {
 		if child.Tag == ber.TagEmbeddedPDV {
 			passwordModifyResponseValue := ber.DecodePacket(child.Data.Bytes())

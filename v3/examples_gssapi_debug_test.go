@@ -109,27 +109,6 @@ func ExampleConn_GSSAPIBind_customDebugLogger() {
 // This example demonstrates implementing a completely custom DebugLogger
 // that only logs specific events of interest.
 func ExampleConn_GSSAPIBind_selectiveDebugLogger() {
-	// Define a custom debug logger that only logs errors and token details
-	type SelectiveDebugLogger struct {
-		errors []error
-		tokens []string
-	}
-
-	logger := &SelectiveDebugLogger{}
-
-	// Implement only the methods we care about
-	type minimalLogger struct {
-		*SelectiveDebugLogger
-	}
-
-	// Create wrapper that implements full interface but only does work for some methods
-	wrapper := &minimalLogger{SelectiveDebugLogger: logger}
-
-	// Add methods (showing a few key ones)
-	_ = struct {
-		gssapi.DebugLogger
-	}{wrapper}
-
 	gssapiClient, err := gssapi.NewClientWithPassword(
 		"username",
 		"REALM.COM",
@@ -159,9 +138,6 @@ func ExampleConn_GSSAPIBind_selectiveDebugLogger() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// Access collected data
-	fmt.Printf("Total errors during authentication: %d\n", len(logger.errors))
 }
 
 // This example shows debugging with enhanced context inspection during authentication.

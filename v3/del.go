@@ -52,13 +52,18 @@ func (l *Conn) Del(delRequest *DelRequest) error {
 		return err
 	}
 
-	if packet.Children[1].Tag == ApplicationDelResponse {
+	response, err := getProtocolOp(packet)
+	if err != nil {
+		return err
+	}
+
+	if response.Tag == ApplicationDelResponse {
 		err := GetLDAPError(packet)
 		if err != nil {
 			return err
 		}
 	} else {
-		return fmt.Errorf("ldap: unexpected response: %d", packet.Children[1].Tag)
+		return fmt.Errorf("ldap: unexpected response: %d", response.Tag)
 	}
 
 	return nil
