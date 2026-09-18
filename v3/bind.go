@@ -671,6 +671,12 @@ type GSSAPIClient interface {
 	DeleteSecContext() error
 }
 
+// GSSAPISecurityLayer protects LDAP messages after a successful SASL bind.
+type GSSAPISecurityLayer interface {
+	WrapSASL(message []byte) ([]byte, error)
+	UnwrapSASL(token []byte) ([]byte, error)
+}
+
 // GSSAPIBindRequest represents a GSSAPI SASL mechanism bind request.
 // See rfc4752 and rfc4513 section 5.2.1.2.
 type GSSAPIBindRequest struct {
@@ -697,8 +703,25 @@ func (l *Conn) GSSAPIBindRequest(client GSSAPIClient, req *GSSAPIBindRequest) er
 
 // GSSAPIBindRequest performs the GSSAPI SASL bind using the provided GSSAPI client.
 func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBindRequest, APOptions []int) error {
-	//nolint:errcheck
-	defer client.DeleteSecContext()
+	l.messageMutex.Lock()
+	if l.outstandingRequests != 0 || l.isStartingTLS || l.isStartingSASL {
+		l.messageMutex.Unlock()
+		return NewError(ErrorNetwork, errors.New("ldap: cannot start GSSAPI bind with outstanding requests"))
+	}
+	l.isStartingSASL = true
+	l.messageMutex.Unlock()
+
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		l.messageMutex.Lock()
+		l.isStartingSASL = false
+		l.messageMutex.Unlock()
+		//nolint:errcheck
+		client.DeleteSecContext()
+	}()
 
 	// Extract debug logger if the client supports it
 	var debugLogger interface{}
@@ -739,7 +762,19 @@ func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBi
 			break
 		}
 	}
-	
+
+	securityLayer, ok := client.(GSSAPISecurityLayer)
+	if !ok {
+		return errors.New("ldap: GSSAPI client does not provide a SASL security layer")
+	}
+	l.messageMutex.Lock()
+	l.saslSecurityLayer = securityLayer
+	l.saslSecurityLayerOwner = client
+	l.isStartingSASL = false
+	l.messageMutex.Unlock()
+	completed = true
+	go l.reader()
+
 	if debugLogger != nil {
 		if dl, ok := debugLogger.(interface{ LogCompletion(time.Duration) }); ok {
 			dl.LogCompletion(time.Since(startTime))
@@ -769,12 +804,14 @@ func (l *Conn) saslBindTokenExchange(reqControls []Control, reqToken []byte, deb
 	if len(reqControls) > 0 {
 		envelope.AppendChild(encodeControls(reqControls))
 	}
-	
+
 	if debugLogger != nil {
 		if dl, ok := debugLogger.(interface{ LogBindRequest(int64, string, int) }); ok {
 			dl.LogBindRequest(msgID, "GSSAPI", len(reqToken))
 		}
-		if dl, ok := debugLogger.(interface{ LogPacket(string, int64, *ber.Packet) }); ok {
+		if dl, ok := debugLogger.(interface {
+			LogPacket(string, int64, *ber.Packet)
+		}); ok {
 			dl.LogPacket("tx", msgID, envelope)
 		}
 	}
@@ -790,7 +827,9 @@ func (l *Conn) saslBindTokenExchange(reqControls []Control, reqToken []byte, deb
 		return nil, err
 	}
 	if debugLogger != nil {
-		if dl, ok := debugLogger.(interface{ LogPacket(string, int64, *ber.Packet) }); ok {
+		if dl, ok := debugLogger.(interface {
+			LogPacket(string, int64, *ber.Packet)
+		}); ok {
 			dl.LogPacket("rx", msgCtx.id, packet)
 		}
 	}
@@ -840,7 +879,6 @@ RESP:
 			//}
 		case 0: // Success - Bind OK.
 			// SASL layer in effect (if any) (See https://www.rfc-editor.org/rfc/rfc4513#section-5.2.1.4)
-			// NOTE: SASL security layers are not supported currently.
 			if debugLogger != nil {
 				if dl, ok := debugLogger.(interface{ LogBindResponse(int64, int64, []byte) }); ok {
 					dl.LogBindResponse(msgID, 0, nil)

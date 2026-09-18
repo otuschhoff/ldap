@@ -12,7 +12,7 @@ import (
 	"github.com/otuschhoff/gokrb5/v8/keytab"
 	"github.com/otuschhoff/gokrb5/v8/types"
 
-	"github.com/otuschhoff/gokrb5/v8/gssapi"
+	krbgssapi "github.com/otuschhoff/gokrb5/v8/gssapi"
 	"github.com/otuschhoff/gokrb5/v8/spnego"
 
 	"github.com/otuschhoff/gokrb5/v8/crypto"
@@ -26,8 +26,9 @@ import (
 type Client struct {
 	*client.Client
 
-	ekey   types.EncryptionKey
-	Subkey types.EncryptionKey
+	ekey            types.EncryptionKey
+	Subkey          types.EncryptionKey
+	securityContext *krbgssapi.SecurityContext
 
 	// DebugLogger is an optional logger for detailed GSSAPI lifecycle events.
 	// Set this to receive debugging information about authentication steps.
@@ -193,7 +194,7 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 		return nil, false, fmt.Errorf("kerberos client is nil")
 	}
 
-	gssapiFlags := []int{gssapi.ContextFlagInteg, gssapi.ContextFlagConf, gssapi.ContextFlagMutual}
+	gssapiFlags := []int{krbgssapi.ContextFlagInteg, krbgssapi.ContextFlagConf, krbgssapi.ContextFlagMutual}
 
 	iteration := 0
 	if input != nil {
@@ -324,7 +325,7 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 		client.DebugLogger.LogTokenDetails("incoming", "SASL-wrap", input)
 	}
 
-	token := &gssapi.WrapToken{}
+	token := &krbgssapi.WrapToken{}
 	err := UnmarshalWrapToken(token, input, true)
 	if err != nil {
 		if client.DebugLogger != nil {
@@ -346,15 +347,22 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 		key = client.Subkey
 	}
 
-	_, err = token.Verify(key, keyusage.GSSAPI_ACCEPTOR_SEAL)
+	acceptorSubkey := (token.Flags & krbgssapi.MICTokenFlagAcceptorSubkey) != 0
+	securityContext, err := krbgssapi.NewSecurityContext(key, true, 1, token.SndSeqNum, acceptorSubkey)
 	if err != nil {
 		if client.DebugLogger != nil {
-			client.DebugLogger.LogError("token verification", err)
+			client.DebugLogger.LogError("security context", err)
 		}
 		return nil, err
 	}
 
-	pl := token.Payload
+	pl, confidential, err := securityContext.Unwrap(input)
+	if err != nil {
+		return nil, err
+	}
+	if confidential {
+		return nil, errors.New("server encrypted the GSSAPI security-layer offer")
+	}
 	if len(pl) != 4 {
 		err := fmt.Errorf("server send bad final token for SASL GSSAPI Handshake")
 		if client.DebugLogger != nil {
@@ -371,34 +379,13 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 		client.DebugLogger.LogNegotiateSaslAuth("received", securityLayers, maxBuffer, "")
 	}
 
-	// We never want a security layer
-	b := [4]byte{0, 0, 0, 0}
-	payload := append(b[:], []byte(authzid)...)
-
-	encType, err := crypto.GetEtype(key.KeyType)
-	if err != nil {
-		if client.DebugLogger != nil {
-			client.DebugLogger.LogError("GetEtype", err)
-		}
-		return nil, err
+	const confidentialityLayer byte = 0x04
+	if securityLayers&confidentialityLayer == 0 {
+		return nil, fmt.Errorf("server does not offer the GSSAPI confidentiality layer (offered 0x%02x)", securityLayers)
 	}
+	payload := handshakePayload(confidentialityLayer, 0x00ffffff, []byte(authzid))
 
-	token = &gssapi.WrapToken{
-		Flags:     0b100,
-		EC:        uint16(encType.GetHMACBitLength() / 8),
-		RRC:       0,
-		SndSeqNum: 1,
-		Payload:   payload,
-	}
-
-	if err := token.SetCheckSum(key, keyusage.GSSAPI_INITIATOR_SEAL); err != nil {
-		if client.DebugLogger != nil {
-			client.DebugLogger.LogError("SetCheckSum", err)
-		}
-		return nil, err
-	}
-
-	output, err := token.Marshal()
+	output, err := securityContext.Wrap(payload, false)
 	if err != nil {
 		if client.DebugLogger != nil {
 			client.DebugLogger.LogError("Marshal wrap token", err)
@@ -407,18 +394,42 @@ func (client *Client) NegotiateSaslAuth(input []byte, authzid string) ([]byte, e
 	}
 
 	if client.DebugLogger != nil {
-		client.DebugLogger.LogNegotiateSaslAuth("sending", 0, 0, authzid)
+		client.DebugLogger.LogNegotiateSaslAuth("sending", confidentialityLayer, 0x00ffffff, authzid)
 		client.DebugLogger.LogTokenDetails("outgoing", "SASL-wrap", output)
 	}
+	client.securityContext = securityContext
 
 	return output, nil
+}
+
+// WrapSASL encrypts and signs an LDAP message using the negotiated context.
+func (client *Client) WrapSASL(message []byte) ([]byte, error) {
+	if client.securityContext == nil {
+		return nil, errors.New("GSSAPI security layer is not established")
+	}
+	return client.securityContext.Wrap(message, true)
+}
+
+// UnwrapSASL decrypts and verifies an LDAP message using the negotiated context.
+func (client *Client) UnwrapSASL(token []byte) ([]byte, error) {
+	if client.securityContext == nil {
+		return nil, errors.New("GSSAPI security layer is not established")
+	}
+	message, confidential, err := client.securityContext.Unwrap(token)
+	if err != nil {
+		return nil, err
+	}
+	if !confidential {
+		return nil, errors.New("received an unencrypted GSSAPI LDAP message")
+	}
+	return message, nil
 }
 
 func getGssWrapTokenId() *[2]byte {
 	return &[2]byte{0x05, 0x04}
 }
 
-func UnmarshalWrapToken(wt *gssapi.WrapToken, b []byte, expectFromAcceptor bool) error {
+func UnmarshalWrapToken(wt *krbgssapi.WrapToken, b []byte, expectFromAcceptor bool) error {
 	// Check if we can read a whole header
 	if len(b) < 16 {
 		return errors.New("bytes shorter than header length")
@@ -439,12 +450,12 @@ func UnmarshalWrapToken(wt *gssapi.WrapToken, b []byte, expectFromAcceptor bool)
 		return errors.New("expected acceptor flag is not set: expecting a token from the acceptor, not the initiator")
 	}
 	// Check the filler byte
-	if b[3] != gssapi.FillerByte {
+	if b[3] != krbgssapi.FillerByte {
 		return fmt.Errorf("unexpected filler byte: expecting 0xFF, was %s ", hex.EncodeToString(b[3:4]))
 	}
 	checksumL := binary.BigEndian.Uint16(b[4:6])
 	// Sanity check on the checksum length
-	if int(checksumL) > len(b)-gssapi.HdrLen {
+	if int(checksumL) > len(b)-krbgssapi.HdrLen {
 		return fmt.Errorf("inconsistent checksum length: %d bytes to parse, checksum length is %d", len(b), checksumL)
 	}
 

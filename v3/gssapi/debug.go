@@ -35,21 +35,8 @@ type DebugLogger interface {
 	// LogEncryptionDetails provides information about encryption keys and algorithms.
 	LogEncryptionDetails(keyType int32, isSubkey bool)
 
-	// LogBindRequest is called when sending an LDAP bind request.
-	LogBindRequest(messageID int64, servicePrincipal string, tokenLen int)
-
-	// LogBindResponse is called when receiving an LDAP bind response.
-	LogBindResponse(messageID int64, resultCode int64, serverToken []byte)
-
-	// LogPacket is called for every LDAP packet transmitted or received.
-	// direction is "tx" or "rx".
-	LogPacket(direction string, messageID int64, packet *ber.Packet)
-
 	// LogError is called when an error occurs during the GSSAPI lifecycle.
 	LogError(operation string, err error)
-
-	// LogCompletion is called when the GSSAPI bind completes successfully.
-	LogCompletion(duration time.Duration)
 }
 
 // DebugContext provides access to internal data structures for debugging.

@@ -2,10 +2,13 @@ package ldap
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"sync"
@@ -97,20 +100,23 @@ type Conn struct {
 	// requestTimeout is loaded atomically
 	// so we need to ensure 64-bit alignment on 32-bit platforms.
 	// https://github.com/go-ldap/ldap/pull/199
-	requestTimeout      int64
-	conn                net.Conn
-	isTLS               bool
-	closing             uint32
-	closeErr            atomic.Value
-	isStartingTLS       bool
-	Debug               debugging
-	chanConfirm         chan struct{}
-	messageContexts     map[int64]*messageContext
-	chanMessage         chan *messagePacket
-	chanMessageID       chan int64
-	wgClose             sync.WaitGroup
-	outstandingRequests uint
-	messageMutex        sync.Mutex
+	requestTimeout         int64
+	conn                   net.Conn
+	isTLS                  bool
+	closing                uint32
+	closeErr               atomic.Value
+	isStartingTLS          bool
+	isStartingSASL         bool
+	saslSecurityLayer      GSSAPISecurityLayer
+	saslSecurityLayerOwner GSSAPIClient
+	Debug                  debugging
+	chanConfirm            chan struct{}
+	messageContexts        map[int64]*messageContext
+	chanMessage            chan *messagePacket
+	chanMessageID          chan int64
+	wgClose                sync.WaitGroup
+	outstandingRequests    uint
+	messageMutex           sync.Mutex
 
 	err error
 }
@@ -311,6 +317,15 @@ func (l *Conn) Close() (err error) {
 
 		l.Debug.Printf("Closing network connection")
 		err = l.conn.Close()
+		if l.saslSecurityLayerOwner != nil {
+			if closer, ok := l.saslSecurityLayerOwner.(interface{ Close() error }); ok {
+				if closeErr := closer.Close(); err == nil {
+					err = closeErr
+				}
+			} else if closeErr := l.saslSecurityLayerOwner.DeleteSecContext(); err == nil {
+				err = closeErr
+			}
+		}
 		l.wgClose.Done()
 	}
 	l.wgClose.Wait()
@@ -522,7 +537,19 @@ func (l *Conn) processMessages() {
 				l.Debug.Printf("Sending message %d", message.MessageID)
 
 				buf := message.Packet.Bytes()
-				_, err := l.conn.Write(buf)
+				l.messageMutex.Lock()
+				securityLayer := l.saslSecurityLayer
+				l.messageMutex.Unlock()
+				var err error
+				if securityLayer != nil {
+					buf, err = wrapSASLMessage(securityLayer, buf)
+					if err != nil {
+						message.Context.sendResponse(&PacketResponse{Error: fmt.Errorf("unable to protect request: %w", err)}, time.Duration(l.getTimeout()))
+						close(message.Context.responses)
+						break
+					}
+				}
+				_, err = l.conn.Write(buf)
 				if err != nil {
 					l.Debug.Printf("Error Sending Message: %s", err.Error())
 					message.Context.sendResponse(&PacketResponse{Error: fmt.Errorf("unable to send request: %s", err)}, time.Duration(l.getTimeout()))
@@ -598,12 +625,21 @@ func (l *Conn) reader() {
 	}()
 
 	bufConn := bufio.NewReader(l.conn)
+	l.messageMutex.Lock()
+	securityLayer := l.saslSecurityLayer
+	l.messageMutex.Unlock()
 	for {
 		if cleanstop {
 			l.Debug.Printf("reader clean stopping (without closing the connection)")
 			return
 		}
-		packet, err := ber.ReadPacket(bufConn)
+		var packet *ber.Packet
+		var err error
+		if securityLayer == nil {
+			packet, err = ber.ReadPacket(bufConn)
+		} else {
+			packet, err = readSASLPacket(bufConn, securityLayer)
+		}
 		if err != nil {
 			// A read error is expected here if we are closing the connection...
 			if !l.IsClosing() {
@@ -623,6 +659,9 @@ func (l *Conn) reader() {
 		if l.isStartingTLS {
 			cleanstop = true
 		}
+		if l.isStartingSASL && isSuccessfulBindResponse(packet) {
+			cleanstop = true
+		}
 		l.messageMutex.Unlock()
 		message := &messagePacket{
 			Op:        MessageResponse,
@@ -633,4 +672,48 @@ func (l *Conn) reader() {
 			return
 		}
 	}
+}
+
+func wrapSASLMessage(securityLayer GSSAPISecurityLayer, message []byte) ([]byte, error) {
+	token, err := securityLayer.WrapSASL(message)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(len(token)) > uint64(^uint32(0)) {
+		return nil, errors.New("ldap: GSSAPI token exceeds the SASL frame limit")
+	}
+	frame := make([]byte, 4, 4+len(token))
+	binary.BigEndian.PutUint32(frame, uint32(len(token)))
+	return append(frame, token...), nil
+}
+
+func readSASLPacket(reader io.Reader, securityLayer GSSAPISecurityLayer) (*ber.Packet, error) {
+	var tokenLength uint32
+	if err := binary.Read(reader, binary.BigEndian, &tokenLength); err != nil {
+		return nil, err
+	}
+	if tokenLength == 0 || tokenLength > 64<<20 {
+		return nil, fmt.Errorf("ldap: invalid GSSAPI token length %d", tokenLength)
+	}
+	token := make([]byte, tokenLength)
+	if _, err := io.ReadFull(reader, token); err != nil {
+		return nil, err
+	}
+	message, err := securityLayer.UnwrapSASL(token)
+	if err != nil {
+		return nil, err
+	}
+	return ber.ReadPacket(bytes.NewReader(message))
+}
+
+func isSuccessfulBindResponse(packet *ber.Packet) bool {
+	if len(packet.Children) < 2 {
+		return false
+	}
+	response := packet.Children[1]
+	if response.Tag != ApplicationBindResponse || len(response.Children) == 0 {
+		return false
+	}
+	result, ok := response.Children[0].Value.(int64)
+	return ok && result == LDAPResultSuccess
 }

@@ -8,6 +8,7 @@ import (
 	"crypto"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/alexbrainman/sspi"
@@ -176,7 +177,11 @@ func (c *SSPIClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, er
 	// supportNoSecurity := input[0] & 0b00000001
 	// supportIntegrity := input[0] & 0b00000010
 	// supportPrivacy := input[0] & 0b00000100
-	selectedSec := 0 // Disabled
+	const privacyLayer = 0x04
+	if inputPayload[0]&privacyLayer == 0 {
+		return nil, fmt.Errorf("server does not offer the GSSAPI confidentiality layer (offered 0x%02x)", inputPayload[0])
+	}
+	selectedSec := privacyLayer
 	var maxSecMsgSize uint32
 	if selectedSec != 0 {
 		maxSecMsgSize, _, _, _, err = c.ctx.Sizes()
@@ -194,39 +199,22 @@ func (c *SSPIClient) NegotiateSaslAuth(token []byte, authzid string) ([]byte, er
 	return inputPayload, nil
 }
 
-func handshakePayload(secLayer byte, maxSize uint32, authzid []byte) []byte {
-	// construct payload and send unencrypted:
-	// 		"The client then constructs data, with the first octet containing the
-	// 		bit-mask specifying the selected security layer, the second through
-	// 		fourth octets containing in network byte order the maximum size
-	// 		output_message the client is able to receive (which MUST be 0 if the
-	// 		client does not support any security layer), and the remaining octets
-	// 		containing the UTF-8 [UTF8] encoded authorization identity.
-	// 		(Implementation note: The authorization identity is not terminated
-	// 		with the zero-valued (%x00) octet (e.g., the UTF-8 encoding of the
-	// 		NUL (U+0000) character)).  The client passes the data to GSS_Wrap
-	// 		with conf_flag set to FALSE and responds with the generated
-	// 		output_message.  The client can then consider the server
-	// 		authenticated."
-	// From https://www.rfc-editor.org/rfc/rfc4752#section-3.1
+// WrapSASL encrypts and signs an LDAP message using SSPI.
+func (c *SSPIClient) WrapSASL(message []byte) ([]byte, error) {
+	return c.ctx.EncryptMessage(message, 0, 0)
+}
 
-	// Client picks security layer to use, 0 is disabled.
-	var selectedSecurity byte = secLayer
-	var truncatedSize uint32 // must be 0 if secLayer is 0
-	if selectedSecurity != 0 {
-		// Only 3 bytes to describe the max size, set the maximum.
-		truncatedSize = 0b00000000_11111111_11111111_11111111
-		if truncatedSize > maxSize {
-			truncatedSize = maxSize
-		}
+// UnwrapSASL decrypts and verifies an LDAP message using SSPI.
+func (c *SSPIClient) UnwrapSASL(token []byte) ([]byte, error) {
+	const KERB_WRAP_NO_ENCRYPT = 0x80000001
+	flags, message, err := c.ctx.DecryptMessage(token, 0)
+	if err != nil {
+		return nil, err
 	}
-
-	payload := make([]byte, 4, 4+len(authzid))
-	binary.BigEndian.PutUint32(payload, truncatedSize)
-	payload[0] = selectedSecurity // Overwrites most significant byte of `maxSize`
-	payload = append(payload, []byte(authzid)...)
-
-	return payload
+	if flags&KERB_WRAP_NO_ENCRYPT != 0 {
+		return nil, errors.New("received an unencrypted GSSAPI LDAP message")
+	}
+	return message, nil
 }
 
 // createChannelBindingsStructure creates a Windows SEC_CHANNEL_BINDINGS structure.
