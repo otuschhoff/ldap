@@ -146,6 +146,51 @@ func TestClientSetServiceTicketMismatch(t *testing.T) {
 	}
 }
 
+func TestNegotiateSaslAuthResetsApplicationSequenceNumbers(t *testing.T) {
+	key := types.EncryptionKey{KeyType: 18, KeyValue: make([]byte, 32)}
+	client := &Client{ekey: key}
+
+	serverNegotiation, err := krbgssapi.NewSecurityContext(key, false, 0, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer, err := serverNegotiation.Wrap([]byte{0x04, 0xff, 0xff, 0xff}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.NegotiateSaslAuth(offer, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := serverNegotiation.Unwrap(response); err != nil {
+		t.Fatalf("unwrap negotiation response: %v", err)
+	}
+
+	serverApplication, err := krbgssapi.NewSecurityContext(key, false, 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := client.WrapSASL([]byte("request"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plaintext, confidential, err := serverApplication.Unwrap(request); err != nil {
+		t.Fatalf("unwrap application request: %v", err)
+	} else if !confidential || string(plaintext) != "request" {
+		t.Fatalf("application request = %q, confidential = %v", plaintext, confidential)
+	}
+
+	reply, err := serverApplication.Wrap([]byte("response"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plaintext, err := client.UnwrapSASL(reply); err != nil {
+		t.Fatalf("unwrap application response: %v", err)
+	} else if string(plaintext) != "response" {
+		t.Fatalf("application response = %q", plaintext)
+	}
+}
+
 // wrapTokenHeader builds a valid 16-byte acceptor WrapToken header with the
 // given checksum length (EC) field.
 func wrapTokenHeader(checksumLen uint16) []byte {
