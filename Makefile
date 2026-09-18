@@ -2,7 +2,7 @@
 
 default: fmt vet lint build test
 
-CONTAINER_CMD := $(shell command -v docker 2>/dev/null || shell command -v podman 2>/dev/null)
+CONTAINER_CMD := $(shell (command -v docker 2>/dev/null || command -v podman 2>/dev/null))
 ifeq ($(CONTAINER_CMD),)
     $(error Neither podman nor docker found in PATH)
 endif
@@ -47,15 +47,13 @@ local-server:
 	@$(CONTAINER_CMD) exec $(CONTAINER_NAME) /bin/sh -c 'for file in /testdata/*.ldif; do echo "Processing $$file..."; cat "$$file" | ldapadd -v -x -H $(LDAP_URL) -D "$(LDAP_ADMIN_DN)" -w $(LDAP_ADMIN_PASSWORD); done'
 
 stop-local-server:
-	-$(CONTAINER_CMD) rm -f -t 10 $(CONTAINER_NAME)
+	-$(CONTAINER_CMD) rm -f $(CONTAINER_NAME)
 
 test:
 	go test -v -cover -race -count=1 .
 
 fuzz:
-	go test -fuzz=FuzzParseDN				-fuzztime=600s .
-	go test -fuzz=FuzzDecodeEscapedSymbols	-fuzztime=600s .
-	go test -fuzz=FuzzEscapeDN 				-fuzztime=600s .
+	(cd v3 && go test -fuzz=FuzzGetLDAPError     -fuzztime=600s .)
 
 # Capture output and force failure when there is non-empty output
 fmt:

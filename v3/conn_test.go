@@ -163,6 +163,99 @@ func TestFinishMessage(t *testing.T) {
 	conn.Close()
 }
 
+// TestConnErrorDataRace ensures the background goroutines that record the
+// connection's last error are synchronized with callers reading it through
+// GetLastError. Run under -race it fails when the writes bypass the mutex the
+// getter holds.
+func TestConnErrorDataRace(t *testing.T) {
+	ptc := newPacketTranslatorConn()
+	defer ptc.Close()
+
+	conn := NewConn(ptc, false)
+	conn.Start()
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = conn.GetLastError()
+			}
+		}
+	}()
+
+	// Responses carrying message IDs with no outstanding request drive
+	// processMessages into the branch that records an unexpected-message error.
+	for i := 0; i < 100; i++ {
+		response := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "LDAP Response")
+		response.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, int64(900000+i), "MessageID"))
+		response.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, 0, "Response"))
+		if err := ptc.SendResponse(response); err != nil {
+			t.Fatalf("unable to send response packet: %s", err)
+		}
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(done)
+	wg.Wait()
+
+	conn.Close()
+}
+
+// TestUnbindCloseDeadlock calls Unbind against a connection whose server
+// side disconnects immediately after receiving the unbind PDU. This
+// exercises the race between the reader goroutine (which stores closeErr
+// and calls Close from its defer) and Unbind's own Close call.
+//
+// Unbind previously discarded the messageContext returned by doRequest
+// without calling finishMessage. If the reader won the race, the
+// processMessages cleanup would block in sendResponse on the orphaned
+// context's unclosed done channel, deadlocking Close.
+//
+// Under normal execution the race window is narrow and the deadlock is
+// not guaranteed to trigger. To verify deterministically, widen the
+// window by adding a sleep in Unbind between doRequest and finishMessage
+// and commenting out finishMessage — see the commit message for details.
+func TestUnbindCloseDeadlock(t *testing.T) {
+	server, client := net.Pipe()
+
+	conn := NewConn(client, false)
+	conn.Start()
+
+	// Server: read the unbind PDU, then close to simulate disconnect.
+	go func() {
+		buf := make([]byte, 4096)
+		_, err := server.Read(buf)
+		if err != nil {
+			t.Errorf("unexpected error from concurrent server read: %v", err)
+		}
+		err = server.Close()
+		if err != nil {
+			t.Errorf("unexpected error from concurrent server close: %v", err)
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- conn.Unbind()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil && !IsErrorWithCode(err, ErrorNetwork) {
+			t.Fatalf("Unbind: unexpected error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Unbind deadlocked: orphaned messageContext blocked processMessages cleanup")
+	}
+}
+
 // See: https://github.com/go-ldap/ldap/issues/332
 func TestNilConnection(t *testing.T) {
 	var conn *Conn
@@ -401,4 +494,41 @@ func (c *packetTranslatorConn) SetReadDeadline(t time.Time) error {
 
 func (c *packetTranslatorConn) SetWriteDeadline(t time.Time) error {
 	return nil
+}
+
+func TestParseLDAPURL(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantHost string
+		wantPath string
+		wantErr  bool
+	}{
+		{"ldap://ldap.example.com:389", "ldap.example.com:389", "", false},
+		{"ldaps://ldap.example.com", "ldap.example.com", "", false},
+		{"ldapi://", "", "", false},
+		{"ldapi:///", "", "/", false},
+		{"ldapi:///var/run/slapd/ldapi", "", "/var/run/slapd/ldapi", false},
+		{"ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi", "/var/run/slapd/ldapi", "", false},
+		{"ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi/dc=example,dc=com", "/var/run/slapd/ldapi", "/dc=example,dc=com", false},
+		{"ldapi://%ZZ", "", "", true},
+	}
+	for _, tc := range tests {
+		u, err := parseLDAPURL(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parseLDAPURL(%q): expected error, got nil", tc.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseLDAPURL(%q): unexpected error: %v", tc.in, err)
+			continue
+		}
+		if u.Host != tc.wantHost {
+			t.Errorf("parseLDAPURL(%q) host = %q, want %q", tc.in, u.Host, tc.wantHost)
+		}
+		if u.Path != tc.wantPath {
+			t.Errorf("parseLDAPURL(%q) path = %q, want %q", tc.in, u.Path, tc.wantPath)
+		}
+	}
 }

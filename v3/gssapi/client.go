@@ -459,7 +459,11 @@ func UnmarshalWrapToken(wt *krbgssapi.WrapToken, b []byte, expectFromAcceptor bo
 		return fmt.Errorf("inconsistent checksum length: %d bytes to parse, checksum length is %d", len(b), checksumL)
 	}
 
-	payloadStart := 16 + checksumL
+	// Compute the offset in int. checksumL is a uint16 read from the wire, so
+	// 16 + checksumL overflows the uint16 range once checksumL exceeds 65519,
+	// wrapping to a small value and turning the slices below into out-of-range
+	// accesses that panic the bind goroutine.
+	payloadStart := krbgssapi.HdrLen + int(checksumL)
 
 	wt.Flags = flags
 	wt.EC = checksumL

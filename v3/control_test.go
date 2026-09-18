@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
@@ -13,6 +14,72 @@ import (
 func TestControlPaging(t *testing.T) {
 	runControlTest(t, NewControlPaging(0))
 	runControlTest(t, NewControlPaging(100))
+}
+
+func TestDecodeControlPagingMalformed(t *testing.T) {
+	// Hand-built paging response controls that previously panicked the
+	// caller's goroutine: a missing value (nil deref) and a value whose
+	// inner sequence is empty or too short (index out of range).
+	typeChild := func() *ber.Packet {
+		return ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, ControlTypePaging, "Control Type")
+	}
+	valueWithSeq := func(children ...*ber.Packet) *ber.Packet {
+		v := ber.Encode(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, nil, "Control Value (Paging)")
+		seq := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "Search Control Value")
+		for _, c := range children {
+			seq.AppendChild(c)
+		}
+		v.AppendChild(seq)
+		return v
+	}
+
+	tests := []struct {
+		name     string
+		children []*ber.Packet
+		wantErr  string
+	}{
+		{
+			name:     "missing value",
+			children: []*ber.Packet{typeChild(), ber.NewBoolean(ber.ClassUniversal, ber.TypePrimitive, ber.TagBoolean, true, "Criticality")},
+			wantErr:  "paging control value is missing",
+		},
+		{
+			name:     "empty value sequence",
+			children: []*ber.Packet{typeChild(), valueWithSeq()},
+			wantErr:  "expected 2",
+		},
+		{
+			name: "value sequence with one child",
+			children: []*ber.Packet{typeChild(), valueWithSeq(
+				ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, int64(0), "Paging Size"),
+			)},
+			wantErr: "expected 2",
+		},
+		{
+			name: "paging size not an integer",
+			children: []*ber.Packet{typeChild(), valueWithSeq(
+				ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, "x", "Paging Size"),
+				ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, "", "Cookie"),
+			)},
+			wantErr: "paging size is not an integer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "Control")
+			for _, child := range tt.children {
+				p.AppendChild(child)
+			}
+			_, err := DecodeControl(p)
+			if err == nil {
+				t.Fatalf("DecodeControl returned nil error, want one containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestControlManageDsaIT(t *testing.T) {
@@ -197,6 +264,10 @@ func TestDecodeControl(t *testing.T) {
 			name: "passwordInHistory", args: args{packet: ber.DecodePacket([]byte{0xa0, 0x24, 0x30, 0x22, 0x4, 0x19, 0x31, 0x2e, 0x33, 0x2e, 0x36, 0x2e, 0x31, 0x2e, 0x34, 0x2e, 0x31, 0x2e, 0x34, 0x32, 0x2e, 0x32, 0x2e, 0x32, 0x37, 0x2e, 0x38, 0x2e, 0x35, 0x2e, 0x31, 0x4, 0x5, 0x30, 0x3, 0x81, 0x1, 0x8})},
 			want: &ControlBeheraPasswordPolicy{Expire: -1, Grace: -1, Error: 8, ErrorString: "New password is in list of old passwords"}, wantErr: false,
 		},
+		{
+			name: "serverSideSort", args: args{packet: ber.DecodePacket([]byte{160, 36, 48, 34, 4, 22, 49, 46, 50, 46, 56, 52, 48, 46, 49, 49, 51, 53, 53, 54, 46, 49, 46, 52, 46, 52, 55, 51, 4, 8, 48, 6, 48, 4, 4, 2, 99, 110})},
+			want: &ControlServerSideSorting{SortKeys: []*SortKey{{Reverse: false, AttributeType: "cn", MatchingRule: ""}}}, wantErr: false,
+		},
 	}
 	for i := range tests {
 		err := addControlDescriptions(tests[i].args.packet)
@@ -220,6 +291,86 @@ func TestDecodeControl(t *testing.T) {
 	}
 }
 
+func TestDecodeControlInvalidTypes(t *testing.T) {
+	// Hand-built packets that previously panicked the caller's
+	// goroutine when DecodeControl cast Value to string or bool
+	// without checking. See #561.
+	intChild := func(n int64) *ber.Packet {
+		return ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, n, "")
+	}
+	strChild := func(s string) *ber.Packet {
+		return ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, s, "")
+	}
+	boolChild := func(b bool) *ber.Packet {
+		return ber.NewBoolean(ber.ClassUniversal, ber.TypePrimitive, ber.TagBoolean, b, "")
+	}
+
+	tests := []struct {
+		name     string
+		children []*ber.Packet
+		wantErr  string
+	}{
+		{
+			name:     "one child, type not a string",
+			children: []*ber.Packet{intChild(42)},
+			wantErr:  "control type is not a string",
+		},
+		{
+			name:     "two children, type not a string",
+			children: []*ber.Packet{intChild(42), boolChild(true)},
+			wantErr:  "control type is not a string",
+		},
+		{
+			name:     "three children, type not a string",
+			children: []*ber.Packet{intChild(42), boolChild(true), strChild("v")},
+			wantErr:  "control type is not a string",
+		},
+		{
+			name:     "three children, criticality not a bool",
+			children: []*ber.Packet{strChild("1.2.3"), intChild(1), strChild("v")},
+			wantErr:  "criticality is not a bool",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "Control")
+			for _, child := range tt.children {
+				p.AppendChild(child)
+			}
+			_, err := DecodeControl(p)
+			if err == nil {
+				t.Fatalf("DecodeControl returned nil error, want one containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDecodeControlUnknownTypeNonStringValue(t *testing.T) {
+	// Unknown ControlType with a non-string value used to panic at
+	// value.Value.(string) in the default branch. Now we fall back
+	// to the raw value bytes instead. See #561.
+	p := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "Control")
+	p.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, "1.2.3.4.5", ""))
+	p.AppendChild(ber.NewBoolean(ber.ClassUniversal, ber.TypePrimitive, ber.TagBoolean, false, ""))
+	p.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, int64(99), ""))
+
+	c, err := DecodeControl(p)
+	if err != nil {
+		t.Fatalf("DecodeControl returned error: %v", err)
+	}
+	cs, ok := c.(*ControlString)
+	if !ok {
+		t.Fatalf("DecodeControl returned %T, want *ControlString", c)
+	}
+	if cs.ControlType != "1.2.3.4.5" {
+		t.Errorf("ControlType = %q, want %q", cs.ControlType, "1.2.3.4.5")
+	}
+}
+
 func TestControlServerSideSortingDecoding(t *testing.T) {
 	control := NewControlServerSideSortingWithSortKeys([]*SortKey{{
 		MatchingRule:  "foo",
@@ -231,11 +382,11 @@ func TestControlServerSideSortingDecoding(t *testing.T) {
 		Reverse:       false,
 	}, {
 		MatchingRule:  "",
-		AttributeType: "",
+		AttributeType: "cn",
 		Reverse:       false,
 	}, {
 		MatchingRule:  "totoRule",
-		AttributeType: "",
+		AttributeType: "cn",
 		Reverse:       false,
 	}, {
 		MatchingRule:  "",
@@ -243,7 +394,8 @@ func TestControlServerSideSortingDecoding(t *testing.T) {
 		Reverse:       false,
 	}})
 
-	controlDecoded, err := NewControlServerSideSorting(control.Encode())
+	// NewControlServerSideSorting need control's value, not the whole control
+	controlDecoded, err := NewControlServerSideSorting(control.Encode().Children[1])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,5 +422,168 @@ func TestControlServerSideSortingDecoding(t *testing.T) {
 		if sk.Reverse != dsk.Reverse {
 			t.Fatalf("reverse mismtach for sortkey %d", i)
 		}
+	}
+}
+
+// TestControlServerSideSortingConstructedAttributeType feeds a SortKey whose
+// attributeType is a constructed-form OCTET STRING. BER leaves such a packet's
+// Value nil, so the decoder's type assertion must be guarded: decoding must not
+// panic, and the missing primitive attributeType is reported as an error.
+func TestControlServerSideSortingConstructedAttributeType(t *testing.T) {
+	sortKey := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "SortKey")
+	// Constructed OCTET STRING: matches the ClassUniversal/TagOctetString case in
+	// the decoder but carries no primitive string Value.
+	sortKey.AppendChild(ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagOctetString, nil, "attributeType"))
+	seq := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "SortKeyList")
+	seq.AppendChild(sortKey)
+
+	value := ber.Encode(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, nil, "Control Value")
+	value.Data.Write(seq.Bytes())
+
+	if _, err := NewControlServerSideSorting(value); err == nil {
+		t.Fatal("expected error for constructed-form attributeType, got nil")
+	}
+}
+
+func TestControlServerSideSortingResultDecoding(t *testing.T) {
+	for _, code := range ControlServerSideSortingCodes {
+		control := &ControlServerSideSortingResult{Result: code}
+
+		decoded, err := NewControlServerSideSortingResult(control.Encode())
+		if err != nil {
+			t.Fatalf("failed to decode result code %d: %s", code, err)
+		}
+
+		if decoded.Result != code {
+			t.Fatalf("result code mismatch: encoded %d - decoded %d", code, decoded.Result)
+		}
+	}
+}
+
+var syncTestUUID = []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00}
+
+func syncUUIDSet(t *testing.T) *ber.Packet {
+	t.Helper()
+	set := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSet, nil, "syncUUIDs")
+	set.AppendChild(ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, string(syncTestUUID), "syncUUID"))
+	return set
+}
+
+func syncInfoPacket(t *testing.T, tag ber.Tag, children ...*ber.Packet) *ber.Packet {
+	t.Helper()
+	seq := ber.Encode(ber.ClassContext, ber.TypeConstructed, tag, nil, "syncInfoValue")
+	for _, child := range children {
+		seq.AppendChild(child)
+	}
+	return ber.DecodePacket(seq.Bytes())
+}
+
+func syncBool(v bool, desc string) *ber.Packet {
+	return ber.NewBoolean(ber.ClassUniversal, ber.TypePrimitive, ber.TagBoolean, v, desc)
+}
+
+func syncCookie(v string) *ber.Packet {
+	return ber.NewString(ber.ClassUniversal, ber.TypePrimitive, ber.TagOctetString, v, "cookie")
+}
+
+// RFC 4533 2.5: syncIdSet ::= SEQUENCE { cookie OPTIONAL, refreshDeletes DEFAULT FALSE, syncUUIDs }.
+func TestControlSyncInfoSyncIdSetOptionalCookie(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		children       []*ber.Packet
+		wantCookie     string
+		wantRefreshDel bool
+	}{
+		{"cookie omitted", []*ber.Packet{syncBool(true, "refreshDeletes"), syncUUIDSet(t)}, "", true},
+		{"cookie and refreshDeletes omitted", []*ber.Packet{syncUUIDSet(t)}, "", false},
+		{"all members present", []*ber.Packet{syncCookie("csn=1"), syncBool(true, "refreshDeletes"), syncUUIDSet(t)}, "csn=1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := NewControlSyncInfo(syncInfoPacket(t, ber.Tag(SyncInfoSyncIdSet), tc.children...))
+			if err != nil {
+				t.Fatalf("NewControlSyncInfo: %v", err)
+			}
+			if got := string(c.SyncIdSet.Cookie); got != tc.wantCookie {
+				t.Errorf("Cookie = %q, want %q", got, tc.wantCookie)
+			}
+			if c.SyncIdSet.RefreshDeletes != tc.wantRefreshDel {
+				t.Errorf("RefreshDeletes = %v, want %v", c.SyncIdSet.RefreshDeletes, tc.wantRefreshDel)
+			}
+			if len(c.SyncIdSet.SyncUUIDs) != 1 {
+				t.Fatalf("SyncUUIDs = %v, want 1 entry", c.SyncIdSet.SyncUUIDs)
+			}
+			if !bytes.Equal(c.SyncIdSet.SyncUUIDs[0][:], syncTestUUID) {
+				t.Errorf("SyncUUIDs[0] = %v, want %v", c.SyncIdSet.SyncUUIDs[0], syncTestUUID)
+			}
+		})
+	}
+}
+
+// RFC 4533 2.5: refreshDelete/refreshPresent ::= SEQUENCE { cookie OPTIONAL, refreshDone DEFAULT TRUE }.
+func TestControlSyncInfoRefreshOptionalCookie(t *testing.T) {
+	pkt := syncInfoPacket(t, ber.Tag(SyncInfoRefreshPresent), syncBool(false, "refreshDone"))
+	c, err := NewControlSyncInfo(pkt)
+	if err != nil {
+		t.Fatalf("NewControlSyncInfo: %v", err)
+	}
+	if len(c.RefreshPresent.Cookie) != 0 {
+		t.Errorf("Cookie = %q, want empty", c.RefreshPresent.Cookie)
+	}
+	if c.RefreshPresent.RefreshDone {
+		t.Error("RefreshDone = true, want false")
+	}
+
+	pkt = syncInfoPacket(t, ber.Tag(SyncInfoRefreshDelete), syncBool(false, "refreshDone"))
+	c, err = NewControlSyncInfo(pkt)
+	if err != nil {
+		t.Fatalf("NewControlSyncInfo: %v", err)
+	}
+	if len(c.RefreshDelete.Cookie) != 0 {
+		t.Errorf("Cookie = %q, want empty", c.RefreshDelete.Cookie)
+	}
+	if c.RefreshDelete.RefreshDone {
+		t.Error("RefreshDone = true, want false")
+	}
+
+	pkt = syncInfoPacket(t, ber.Tag(SyncInfoRefreshDelete), syncCookie("csn=2"), syncBool(false, "refreshDone"))
+	c, err = NewControlSyncInfo(pkt)
+	if err != nil {
+		t.Fatalf("NewControlSyncInfo: %v", err)
+	}
+	if string(c.RefreshDelete.Cookie) != "csn=2" {
+		t.Errorf("Cookie = %q, want %q", c.RefreshDelete.Cookie, "csn=2")
+	}
+	if c.RefreshDelete.RefreshDone {
+		t.Error("RefreshDone = true, want false")
+	}
+}
+
+// RFC 4533 2.4: syncDoneValue ::= SEQUENCE { cookie OPTIONAL, refreshDeletes DEFAULT FALSE }.
+func TestControlSyncDoneOptionalCookie(t *testing.T) {
+	seq := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "syncDoneValue")
+	seq.AppendChild(syncBool(true, "refreshDeletes"))
+	c, err := NewControlSyncDone(ber.DecodePacket(seq.Bytes()))
+	if err != nil {
+		t.Fatalf("NewControlSyncDone: %v", err)
+	}
+	if len(c.Cookie) != 0 {
+		t.Errorf("Cookie = %q, want empty", c.Cookie)
+	}
+	if !c.RefreshDeletes {
+		t.Error("RefreshDeletes = false, want true")
+	}
+}
+
+// syncUUIDs is mandatory; a server omitting it must not crash the decoder.
+func TestControlSyncInfoSyncIdSetWithoutUUIDs(t *testing.T) {
+	c, err := NewControlSyncInfo(syncInfoPacket(t, ber.Tag(SyncInfoSyncIdSet), syncCookie("csn=3")))
+	if err != nil {
+		t.Fatalf("NewControlSyncInfo: %v", err)
+	}
+	if string(c.SyncIdSet.Cookie) != "csn=3" {
+		t.Errorf("Cookie = %q, want %q", c.SyncIdSet.Cookie, "csn=3")
+	}
+	if len(c.SyncIdSet.SyncUUIDs) != 0 {
+		t.Errorf("SyncUUIDs = %v, want none", c.SyncIdSet.SyncUUIDs)
 	}
 }

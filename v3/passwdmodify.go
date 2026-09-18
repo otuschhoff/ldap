@@ -111,7 +111,10 @@ func (l *Conn) PasswordModify(passwordModifyRequest *PasswordModifyRequest) (*Pa
 	extendedResponse := response
 	for _, child := range extendedResponse.Children {
 		if child.Tag == ber.TagEmbeddedPDV {
-			passwordModifyResponseValue := ber.DecodePacket(child.Data.Bytes())
+			passwordModifyResponseValue, err := ber.DecodePacketErr(child.Data.Bytes())
+			if err != nil {
+				return nil, fmt.Errorf("ldap: failed to decode PasswordModifyResponseValue: %s", err)
+			}
 			if len(passwordModifyResponseValue.Children) == 1 {
 				if passwordModifyResponseValue.Children[0].Tag == ber.TagEOC {
 					result.GeneratedPassword = ber.DecodeString(passwordModifyResponseValue.Children[0].Data.Bytes())

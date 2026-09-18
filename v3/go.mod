@@ -3,9 +3,9 @@ module github.com/go-ldap/ldap/v3
 go 1.26.0
 
 require (
-	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358
+	github.com/Azure/go-ntlmssp v0.1.1
 	github.com/alexbrainman/sspi v0.0.0-20250919150558-7d374ff0d59e
-	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667
+	github.com/go-asn1-ber/asn1-ber v1.5.8
 	github.com/google/uuid v1.6.0
 	github.com/otuschhoff/gokrb5/v8 v8.5.5-0.20260918125053-4ad777f79e2a
 	github.com/stretchr/testify v1.12.1
