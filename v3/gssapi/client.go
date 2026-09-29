@@ -194,7 +194,7 @@ func (client *Client) InitSecContextWithOptions(target string, input []byte, APO
 		return nil, false, fmt.Errorf("kerberos client is nil")
 	}
 
-	gssapiFlags := []int{krbgssapi.ContextFlagInteg, krbgssapi.ContextFlagConf, krbgssapi.ContextFlagMutual}
+	gssapiFlags := []int{krbgssapi.ContextFlagInteg, krbgssapi.ContextFlagConf, krbgssapi.ContextFlagMutual, krbgssapi.ContextFlagReplay, krbgssapi.ContextFlagSequence}
 
 	iteration := 0
 	if input != nil {

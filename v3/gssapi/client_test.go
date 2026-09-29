@@ -5,11 +5,16 @@ package gssapi
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"strings"
 	"testing"
 
+	krbclient "github.com/otuschhoff/gokrb5/v8/client"
+	"github.com/otuschhoff/gokrb5/v8/credentials"
 	krbgssapi "github.com/otuschhoff/gokrb5/v8/gssapi"
 	"github.com/otuschhoff/gokrb5/v8/messages"
+	"github.com/otuschhoff/gokrb5/v8/spnego"
+	"github.com/otuschhoff/gokrb5/v8/test/testdata"
 	"github.com/otuschhoff/gokrb5/v8/types"
 )
 
@@ -127,6 +132,45 @@ func TestClientSetServiceTicket(t *testing.T) {
 	}
 	if entry.key.KeyType != key.KeyType {
 		t.Fatalf("expected key to be stored, got: %d", entry.key.KeyType)
+	}
+}
+
+func TestInitSecContextRequestsSequenceProtection(t *testing.T) {
+	ticketBytes, err := hex.DecodeString(testdata.MarshaledKRB5ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ticket messages.Ticket
+	if err := ticket.Unmarshal(ticketBytes); err != nil {
+		t.Fatal(err)
+	}
+	key := types.EncryptionKey{KeyType: 18, KeyValue: make([]byte, 32)}
+	creds := credentials.New("testuser", testdata.TEST_REALM)
+	creds.SetCName(types.PrincipalName{NameString: []string{"testuser"}})
+	client := &Client{
+		Client: &krbclient.Client{Credentials: creds},
+		serviceTickets: map[string]serviceTicketEntry{
+			"ldap/example.com": {ticket: ticket, key: key},
+		},
+	}
+
+	encoded, _, err := client.InitSecContextWithOptions("ldap/example.com", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var token spnego.KRB5Token
+	if err := token.Unmarshal(encoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := token.APReq.DecryptAuthenticator(key); err != nil {
+		t.Fatal(err)
+	}
+	var checksum krbgssapi.AuthenticatorChecksum
+	if err := checksum.Unmarshal(token.APReq.Authenticator.Cksum.Checksum); err != nil {
+		t.Fatal(err)
+	}
+	if want := uint32(krbgssapi.ContextFlagReplay | krbgssapi.ContextFlagSequence); checksum.Flags&want != want {
+		t.Fatalf("AP-REQ GSSAPI flags = %#x, missing replay/sequence %#x", checksum.Flags, want)
 	}
 }
 
