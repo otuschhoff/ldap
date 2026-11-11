@@ -120,6 +120,10 @@ type Conn struct {
 	outstandingRequests    uint
 	messageMutex           sync.Mutex
 
+	// saslMutex is a leaf lock: Close can hold messageMutex while waiting for
+	// processMessages, which must still be able to snapshot the security layer.
+	saslMutex sync.RWMutex
+
 	// errMutex guards err only. It is a leaf lock: processMessages and reader
 	// record errors while another goroutine may hold messageMutex, so err must
 	// not share messageMutex or those writers could deadlock.
@@ -582,9 +586,9 @@ func (l *Conn) processMessages() {
 				l.Debug.Printf("Sending message %d", message.MessageID)
 
 				buf := message.Packet.Bytes()
-				l.messageMutex.Lock()
+				l.saslMutex.RLock()
 				securityLayer := l.saslSecurityLayer
-				l.messageMutex.Unlock()
+				l.saslMutex.RUnlock()
 				var err error
 				if securityLayer != nil {
 					buf, err = wrapSASLMessage(securityLayer, buf)
@@ -674,9 +678,9 @@ func (l *Conn) reader() {
 	}()
 
 	bufConn := bufio.NewReader(l.conn)
-	l.messageMutex.Lock()
+	l.saslMutex.RLock()
 	securityLayer := l.saslSecurityLayer
-	l.messageMutex.Unlock()
+	l.saslMutex.RUnlock()
 	for {
 		if cleanstop {
 			l.Debug.Printf("reader clean stopping (without closing the connection)")

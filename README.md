@@ -48,6 +48,12 @@ This library supports GSSAPI SASL authentication with Kerberos for both Unix/Lin
 For detailed documentation and examples, see [GSSAPI.md](GSSAPI.md).
 For debug logging guide, see [GSSAPI-DEBUG.md](GSSAPI-DEBUG.md).
 
+The installed SASL security layer uses a separate leaf lock. Message processing
+can snapshot it while connection shutdown holds the message-lifecycle mutex and
+waits for that worker; idle connection loss followed by another request must not
+deadlock cleanup. This does not change transport protection or credential
+ownership.
+
 Quick example:
 ```go
 import "github.com/go-ldap/ldap/v3/gssapi"

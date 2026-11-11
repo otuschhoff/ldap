@@ -816,7 +816,9 @@ func (l *Conn) GSSAPIBindRequestWithAPOptions(client GSSAPIClient, req *GSSAPIBi
 	}
 	<-saslReaderStopped
 	l.messageMutex.Lock()
+	l.saslMutex.Lock()
 	l.saslSecurityLayer = securityLayer
+	l.saslMutex.Unlock()
 	l.saslSecurityLayerOwner = client
 	l.isStartingSASL = false
 	l.saslReaderStopped = nil
